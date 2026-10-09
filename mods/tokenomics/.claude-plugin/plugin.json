@@ -1,0 +1,6 @@
+{
+  "name": "tokenomics",
+  "version": "0.1.0",
+  "description": "Starter mod: registers /tokenomics and a status line entry.",
+  "author": { "name": "NakaGater" }
+}

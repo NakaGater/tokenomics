@@ -1,0 +1,8 @@
+{
+  "name": "tokenomics",
+  "description": "Claude Code mods by NakaGater.",
+  "owner": { "name": "NakaGater" },
+  "plugins": [
+    { "name": "tokenomics", "source": "./mods/tokenomics" }
+  ]
+}

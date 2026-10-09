@@ -1,0 +1,15 @@
+{
+  "name": "tokenomics-mods",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync-types": "scripts/sync-types.sh",
+    "check": "scripts/check-all.sh",
+    "validate": "claude plugin validate .",
+    "typecheck": "tsc -p mods/tokenomics",
+    "test": "claude plugin test mods/tokenomics"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

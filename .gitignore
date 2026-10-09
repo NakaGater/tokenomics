@@ -1,0 +1,4 @@
+node_modules/
+# Laid by the Claude Code engine (or scripts/sync-types.sh) on every load; build-specific.
+mods/*/.claude-plugin/types/
+.DS_Store
