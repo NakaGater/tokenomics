@@ -246,9 +246,10 @@ test('/clear starts the band over but keeps the money', async ($, on) => {
   const usage = { input_tokens: 900, output_tokens: 300, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, model: 'm' }
   const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
 
-  await $.session.measure({ ...measure.context(85), cost: { usd: 3 } })
+  // 150k of the 160k the engine compacts at: the gauge counts toward that.
+  await $.session.measure({ ...measure.context(75), cost: { usd: 3 } })
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', usage })
-  expect(await ui.find({ type: 'Text', text: /85%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /93%/ })).toBeDefined()
 
   await $.session.end({ reason: 'clear' } as never)
   expect(await ui.find({ type: 'Text', text: /0%/ })).toBeDefined()

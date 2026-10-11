@@ -2,7 +2,7 @@ import type { Facts } from '../../types'
 import { type Advice, THRESHOLDS, contextLevel, scaledPercent } from '../lib/advice'
 import { CAT_COLS, CAT_ROWS } from '../lib/cat'
 import { bar, formatTokens, formatUsd, limitLabel, wrappedRows } from '../lib/format'
-import { gaugeCells } from '../lib/gauge'
+import { fillOf, fillTokens, gaugeCells } from '../lib/gauge'
 import { FACE, FACE_CELLS, FACE_STYLE, moodOf } from '../lib/mascot'
 import type { Offer } from '../lib/offers'
 
@@ -56,8 +56,9 @@ export type BandProps = {
 
 /**
  * Narrower than this, the cat and the numbers do not fit side by side: the band is one plain row. The card needs
- * its frame and padding (4), the cat (16), a gap (2) and the widest row, the gauge with its label and percent (32):
- * 54 in all. A pane docked beside the transcript leaves the band about 56 on a terminal of 110 columns, so it is no more.
+ * its frame and padding (4), the cat (16), a gap (2) and the widest row, the gauge (at least 6) with its label, percent
+ * and tokens (34 in all, see `GAUGE_ROW_CELLS`): 56 in all. A pane docked beside the transcript leaves the band about 56
+ * on a terminal of 110 columns, so it is no more.
  */
 export const CARD_MIN_COLUMNS = 56
 
@@ -66,6 +67,17 @@ export const CARD_ROWS = CAT_ROWS + 2
 
 /** What the card takes beside its right column: the frame and padding (4), the cat (16) and the gap between (2). */
 const CARD_SIDE_CELLS = 4 + CAT_COLS + 2
+
+/**
+ * What the gauge's row takes besides the gauge: the label (12), the percent at its widest ("100%", 4), the tokens at their
+ * widest ("999k/999k", 9) and the three gaps between the four. Reserved at full size, so the gauge does not change length as the numbers do.
+ */
+const GAUGE_ROW_CELLS = 12 + 4 + 9 + 3
+const GAUGE_MIN_COLUMNS = 6
+
+/** The gauge's length: the usual one, or what is left of the card's right column. */
+const gaugeColumnsFor = (columns: number): number =>
+  Math.max(GAUGE_MIN_COLUMNS, Math.min(columns >= 90 ? 20 : 14, columns - CARD_SIDE_CELLS - GAUGE_ROW_CELLS))
 
 /**
  * Rows the card gains over its four when it carries a suggestion: the suggestion may wrap in the right column, and
@@ -148,9 +160,10 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
   const { Box, Text, Button } = p.ui
   const { Raster, Image } = p
   const f = p.facts
-  const percent = f.contextPercent ?? 0
+  const fill = fillOf(f)
+  const tokens = fillTokens(fill)
   const level = contextLevel(scaledPercent(f))
-  const gaugeColumns = p.columns >= 90 ? 20 : 14
+  const gaugeColumns = gaugeColumnsFor(p.columns)
 
   return (
     <Box borderStyle="round" borderColor={levelColor(level) ?? 'claude'} paddingX={1} gap={2}>
@@ -162,10 +175,11 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
       <Box flexDirection="column" flexGrow={1}>
         <Box gap={1}>
           <Text dimColor>コンテキスト</Text>
-          <Raster key="gauge" columns={gaugeColumns} rows={1} cells={gaugeCells(percent, gaugeColumns)} />
+          <Raster key="gauge" columns={gaugeColumns} rows={1} cells={gaugeCells(fill.percent, gaugeColumns)} />
           <Text bold color={levelColor(level)}>
-            {percent}%
+            {fill.percent}%
           </Text>
+          {tokens !== null && <Text>{tokens}</Text>}
         </Box>
         <Box gap={2} flexWrap="wrap">
           {figures(p.ui, f, p.savedTokens, p.keptTokens)}
@@ -194,7 +208,8 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
   const { Box, Text, Button } = p.ui
   const f = p.facts
   const isNarrow = p.columns < 56
-  const percent = f.contextPercent ?? 0
+  const fill = fillOf(f)
+  const tokens = fillTokens(fill)
   const face = FACE_STYLE[p.mood]
 
   return (
@@ -208,8 +223,9 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
         <Box gap={1}>
           <Text dimColor>コンテキスト</Text>
           <Text color={levelColor(contextLevel(scaledPercent(f)))}>
-            {bar(percent, isNarrow ? 6 : 10)} {percent}%
+            {bar(fill.percent, isNarrow ? 6 : 10)} {fill.percent}%
           </Text>
+          {tokens !== null && <Text>{tokens}</Text>}
         </Box>
         {figures(p.ui, f, p.savedTokens, p.keptTokens)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}

@@ -2,6 +2,7 @@ import type { Facts, Savings } from '../../types'
 
 import type { Advice } from './advice'
 import { bar, clockLabel, formatTokens, formatUsd, limitLabel } from './format'
+import { type Fill, fillOf } from './gauge'
 import { FACE, moodForLevel } from './mascot'
 import type { Offer } from './offers'
 
@@ -40,19 +41,22 @@ export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
   return rows
 }
 
+/** What stands beside the context's percent: the tokens against the size it is counted in, and what is left before the auto-compaction. */
+const fillNote = (f: Facts, fill: Fill): string => {
+  if (fill.tokens === null || fill.limit === null) return ''
+  const sizes = `${formatTokens(fill.tokens)} / ${formatTokens(fill.limit)}`
+  if (fill.isCompactAt) return `（${sizes}。あと約 ${formatTokens(Math.max(0, fill.limit - fill.tokens))} tok で自動要約）`
+  return f.isAutoCompactEnabled === false ? `（${sizes}。自動要約はオフ）` : `（${sizes}）`
+}
+
 /** The state of the session in labelled rows: the pane draws them, the plain-text report prints them. */
 export const statusRows = (f: Facts, savings?: Savings): Row[] => {
   const rows: Row[] = []
 
+  const fill = fillOf(f)
   rows.push({
     label: 'コンテキスト',
-    value:
-      f.contextPercent === null
-        ? NONE
-        : `${bar(f.contextPercent)} ${f.contextPercent}%` +
-          (f.contextTokens !== null && f.contextWindow !== null
-            ? `（${formatTokens(f.contextTokens)} / ${formatTokens(f.contextWindow)}）`
-            : ''),
+    value: f.contextPercent === null ? NONE : `${bar(fill.percent)} ${fill.percent}%${fillNote(f, fill)}`,
   })
 
   rows.push({

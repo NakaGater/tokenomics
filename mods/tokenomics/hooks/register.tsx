@@ -355,6 +355,10 @@ const change = async ($: Dollar, fn: (f: Facts) => Facts): Promise<void> => {
 const messagesOf = (b: SessionContextBreakdown): number =>
   b.categories.filter(c => c.kind === 'used' && /message/i.test(c.name)).reduce((sum, c) => sum + c.tokens, 0)
 
+/** When the breakdown, which holds the size the engine auto-compacts at, was last read; and how long it is trusted between turns. */
+let breakdownAt = 0
+const BREAKDOWN_EVERY_MS = 60_000
+
 /** Reads the engine's own figures; with `withBreakdown`, also what fills the context (a local estimate, free). */
 const refreshUsage = async ($: Dollar, withBreakdown: boolean): Promise<void> => {
   try {
@@ -374,7 +378,10 @@ const refreshUsage = async ($: Dollar, withBreakdown: boolean): Promise<void> =>
       // What an empty session holds is what a response measured less the conversation: learned from the first one.
       return usage.context.tokens === undefined ? known : applyBaseline(known, usage.context.tokens, messages)
     })
-    if (breakdown !== undefined) await update($, heavy, () => heavyFrom(breakdown))
+    if (breakdown !== undefined) {
+      breakdownAt = await $.clock.now()
+      await update($, heavy, () => heavyFrom(breakdown))
+    }
   } catch {
     // The figures are a convenience: the band keeps what it has.
   }
@@ -1614,8 +1621,9 @@ export const register: Register = (on, options) => {
         const turn = turnTokens(e.usage)
         const now = await $.clock.now()
         await change($, f => applyTurn(f, turn, now, toolsThisTurn, e.answer.length, isSentInTurn))
-        // The first response measures what an empty session holds, which the cat's speed is counted from.
-        if ((await read($, facts)).baselineTokens === null) await refreshUsage($, true)
+        // The first response measures what an empty session holds, which the cat's speed is counted from. The size the engine
+        // auto-compacts at, which the gauge counts against, can change under us (/autocompact, a model switch): read again now and then.
+        if ((await read($, facts)).baselineTokens === null || now - breakdownAt >= BREAKDOWN_EVERY_MS) await refreshUsage($, true)
       }
       nudgeCat($)
       await maybeOffer($)

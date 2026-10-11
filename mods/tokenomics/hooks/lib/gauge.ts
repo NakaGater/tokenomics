@@ -1,3 +1,6 @@
+import type { Facts } from '../../types'
+
+import { formatTokens } from './format'
 import { type Cell, EIGHTHS, TERMINAL_DEFAULT, mix, packCells } from './raster'
 
 const GREEN = 0x4cc38a
@@ -20,6 +23,32 @@ export const gaugeGrid = (percent: number, columns: number): Cell[] => {
     return { ch: '▁', fg: TRACK, bg: TERMINAL_DEFAULT }
   })
 }
+
+/**
+ * What the gauge reads: how far the conversation is from the size the engine auto-compacts at, so a full gauge is a
+ * compaction. Where there is no such size (auto-compaction off, or not read yet) it is the share of the window.
+ */
+export type Fill = {
+  percent: number
+  /** The conversation's size and the size the percent is counted against; null while either is unknown. */
+  tokens: number | null
+  limit: number | null
+  /** The limit is where auto-compaction runs, not the end of the window. */
+  isCompactAt: boolean
+}
+
+export const fillOf = (f: Facts): Fill => {
+  const at = f.isAutoCompactEnabled === false ? null : f.autoCompactThreshold
+  if (f.contextTokens !== null && at !== null && at > 0) {
+    // Rounded down: a full gauge is not shown until the compaction is due.
+    return { percent: Math.min(100, Math.floor((f.contextTokens / at) * 100)), tokens: f.contextTokens, limit: at, isCompactAt: true }
+  }
+  return { percent: f.contextPercent ?? 0, tokens: f.contextTokens, limit: f.contextWindow, isCompactAt: false }
+}
+
+/** `73k/196k` beside the percent; nothing while either figure is unknown. */
+export const fillTokens = (fill: Fill): string | null =>
+  fill.tokens === null || fill.limit === null ? null : `${formatTokens(fill.tokens)}/${formatTokens(fill.limit)}`
 
 /** `RasterProps.cells` for the gauge. */
 export const gaugeCells = (percent: number, columns: number): string => packCells(gaugeGrid(percent, columns))

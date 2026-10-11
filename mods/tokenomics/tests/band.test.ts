@@ -40,7 +40,8 @@ test('after a turn the band shows the fill and the fresh tokens, not the cache r
   await $.session.measure(measure.context(52))
   await finishTurn($ as never)
 
-  expect(await ui.find({ type: 'Text', text: /52%/ })).toBeDefined()
+  // 104k of the 160k the engine compacts at.
+  expect(await ui.find({ type: 'Text', text: /65%/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '3.2k tok' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /2\.1M/ })).toBeUndefined()
 })
@@ -369,4 +370,62 @@ test('the face sits in a box as wide as the widest face, so the plain row does n
   expect((await holder(FACE.good))?.props.width).toBe(7)
   await $.session.measure(measure.context(95))
   expect((await holder(FACE.full))?.props.width).toBe(7)
+})
+
+test('the gauge counts toward the auto-compaction: the percent and the tokens against the size it runs at, on every surface', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/work' } as never)
+  // 120k of the 160k the engine compacts at, in a window of 200k (60%).
+  await $.session.measure(measure.context(60))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...bandProps(), surface })
+    expect(await ui.find({ type: 'Text', text: /75%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '120k/160k' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /60%/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('with no auto-compaction size to count toward, the gauge keeps the window’s share, and says its tokens against the window', async ($, on) => {
+  engine(on, { autoCompactWindow: {} })
+  await $.session.start({ cwd: '/work' } as never)
+  await $.session.measure(measure.context(60))
+
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /60%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '120k/200k' })).toBeDefined()
+})
+
+test('the gauge gives up length before the card gives up the cat: 6 cells at the narrowest card, the usual at ease', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.session.measure(measure.context(60))
+
+  const lengths: [number, number][] = [[56, 6], [60, 10], [64, 14], [89, 14], [90, 20], [140, 20]]
+  for (const [bodyColumns, gauge] of lengths) {
+    const ui = await $.ui.mount({ ...bandProps({ bodyColumns }), surface: 'terminal' })
+    expect((await ui.find({ type: 'Raster', key: 'gauge' }))?.props.columns, `at ${bodyColumns} columns`).toBe(gauge)
+    await ui.unmount()
+  }
+})
+
+test('the size the engine compacts at is read again as turns go by, so /autocompact shows without a restart', async ($, on) => {
+  const options = { autoCompactWindow: { threshold: 160_000 } }
+  const calls = engine(on, options)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.session.measure(measure.context(50))
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  // The first turn reads the breakdown for what an empty session holds, whatever the time since the start.
+  await finishTurn($ as never)
+  expect(await ui.find({ type: 'Text', text: '100k/160k' })).toBeDefined()
+
+  // The person sets a shorter window; a turn ending soon after still counts toward the old size, one after a minute does not.
+  options.autoCompactWindow.threshold = 120_000
+  await finishTurn($ as never)
+  expect(await ui.find({ type: 'Text', text: '100k/160k' })).toBeDefined()
+  await calls.clock.advance(61_000)
+  await finishTurn($ as never)
+  expect(await ui.find({ type: 'Text', text: '100k/120k' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /83%/ })).toBeDefined()
 })

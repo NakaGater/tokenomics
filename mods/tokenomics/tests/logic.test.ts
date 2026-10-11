@@ -24,6 +24,7 @@ import { FACE, FACE_CELLS, moodOf } from '../hooks/lib/mascot'
 import { activeSavings, cappedEffort, fitsWindow, initialModes, lighterModels, tagOf } from '../hooks/lib/modes'
 import { OFFER_NAMES, computeOffers, nextOffer, pruneSeen, standingOffers } from '../hooks/lib/offers'
 import { isBoundaryCommand } from '../hooks/lib/signals'
+import { fillOf, fillTokens } from '../hooks/lib/gauge'
 import { report, statusRows } from '../hooks/lib/status'
 
 const at = (percent: number, extra: Partial<Facts> = {}): Facts => ({
@@ -258,6 +259,53 @@ describe('status', () => {
     expect(text).toContain('会話が重くなってきました')
     expect(text).toContain('受け入れると')
     expect(text).toContain('メモに残してから要約')
+  })
+})
+
+describe('the gauge toward the auto-compaction', () => {
+  const counting = (tokens: number, extra: Partial<Facts> = {}): Facts =>
+    ({ ...at(Math.round(tokens / 2000)), contextTokens: tokens, autoCompactThreshold: 160_000, isAutoCompactEnabled: true, ...extra })
+
+  test('the percent is the share of the size the engine compacts at, with both sizes beside it', () => {
+    const fill = fillOf(counting(120_000))
+    expect(fill).toEqual({ percent: 75, tokens: 120_000, limit: 160_000, isCompactAt: true })
+    expect(fillTokens(fill)).toBe('120k/160k')
+  })
+
+  test('it is full only when the compaction is due: rounded down, and held at 100 beyond', () => {
+    expect(fillOf(counting(159_999)).percent).toBe(99)
+    expect(fillOf(counting(160_000)).percent).toBe(100)
+    expect(fillOf(counting(175_000)).percent).toBe(100)
+    expect(fillOf(counting(0)).percent).toBe(0)
+  })
+
+  test('with auto-compaction off, or its size not read yet, it is the window’s share, tokens against the window', () => {
+    const off = fillOf(counting(120_000, { isAutoCompactEnabled: false }))
+    expect(off).toEqual({ percent: 60, tokens: 120_000, limit: 200_000, isCompactAt: false })
+    expect(fillTokens(off)).toBe('120k/200k')
+    expect(fillOf(counting(120_000, { autoCompactThreshold: null })).isCompactAt).toBe(false)
+    expect(fillOf(counting(120_000, { autoCompactThreshold: 0 })).isCompactAt).toBe(false)
+  })
+
+  test('without a token count there is only the percent; before anything is read it is nothing', () => {
+    const fill = fillOf({ ...counting(120_000), contextTokens: null })
+    expect(fill.percent).toBe(60)
+    expect(fillTokens(fill)).toBeNull()
+    expect(fillOf(initialFacts).percent).toBe(0)
+  })
+
+  test('a window of a million counts toward the size it compacts at, not the 200k the rest of the mod counts in', () => {
+    const fill = fillOf({ ...initialFacts, contextTokens: 483_500, contextPercent: 48, contextWindow: 1_000_000, autoCompactThreshold: 967_000, isAutoCompactEnabled: true })
+    expect(fill.percent).toBe(50)
+    expect(fillTokens(fill)).toBe('484k/967k')
+  })
+
+  test('the pane says what is left before the compaction, or that there is none to wait for', () => {
+    const row = (f: Facts): string | undefined => statusRows(f).find(r => r.label === 'コンテキスト')?.value
+    expect(row(counting(120_000))).toContain('75%（120k / 160k。あと約 40k tok で自動要約）')
+    expect(row(counting(175_000))).toContain('あと約 0 tok で自動要約')
+    expect(row(counting(120_000, { isAutoCompactEnabled: false }))).toContain('60%（120k / 200k。自動要約はオフ）')
+    expect(row(counting(120_000, { isAutoCompactEnabled: null, autoCompactThreshold: null }))).toContain('60%（120k / 200k）')
   })
 })
 
