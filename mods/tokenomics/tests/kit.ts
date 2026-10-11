@@ -1,6 +1,8 @@
 import type { ConfigRow, On, SessionMeasureInput, SessionMessage, SessionUsage } from 'claude-code'
 import { mock } from 'claude-code/testing'
 
+import { FACE } from '../hooks/lib/mascot'
+
 export const SURFACES = ['terminal', 'desktop'] as const
 
 export const bandProps = (over: { hasSurvey?: boolean; isWorking?: boolean; bodyColumns?: number; maxRows?: number } = {}) =>
@@ -430,3 +432,27 @@ export const decodeCells = (packed: string): { ch: string; fg: number; bg: numbe
 /** The colour of the band's frame: the card is the one round box the band draws (a suggestion's own card is drawn beside it). */
 export const frameColor = async (ui: { findAll: (t: { type: string }) => Promise<{ props: Record<string, unknown> }[]> }): Promise<unknown> =>
   (await ui.findAll({ type: 'Box' })).find(b => b.props.borderStyle === 'round')?.props.borderColor
+
+type TextFinder = { findAll: (t: { type: string }) => Promise<{ text?: string; props: Record<string, unknown> }[]> }
+
+/** What the one-line suggestion says in the band: the Text in the claude color that is not the plain row's face (the card's frame is a Box). */
+export const nudgeIn = async (ui: TextFinder): Promise<string | undefined> =>
+  (await ui.findAll({ type: 'Text' })).find(t => t.props.color === 'claude' && !Object.values(FACE).includes(t.text ?? ''))?.text
+
+/** What the cat's phrase says in the card: the dim Text that is not the label of a figure or a limit. */
+export const phraseIn = async (ui: TextFinder): Promise<string | undefined> =>
+  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|エージェント|節約|委任（推定）|累計|.*の上限)$/.test(t.text ?? ''))?.text
+
+/** What the band says the digest has saved today: the figure beside the dim label "節約", or undefined where it says nothing. */
+export const savedIn = async (ui: TextFinder): Promise<string | undefined> => {
+  const texts = await ui.findAll({ type: 'Text' })
+  const label = texts.find(t => t.text === '節約' && t.props.dimColor === true)
+  return label === undefined ? undefined : texts.find(t => t.props.color === 'success')?.text
+}
+
+/** What the band says work handed to the plugin's skills and agents kept out today: the figure after the dim label "委任（推定）", or undefined. */
+export const keptIn = async (ui: TextFinder): Promise<string | undefined> => {
+  const texts = await ui.findAll({ type: 'Text' })
+  const at = texts.findIndex(t => t.text === '委任（推定）' && t.props.dimColor === true)
+  return at < 0 ? undefined : texts.slice(at + 1).find(t => t.props.color === 'success')?.text
+}

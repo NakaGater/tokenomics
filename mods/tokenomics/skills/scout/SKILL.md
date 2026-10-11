@@ -1,8 +1,7 @@
 ---
 name: scout
-description: コードの調査を軽いエージェントに任せて、短い報告だけを受け取ります
+description: Hand a read-only code investigation to a cheap agent that returns a short report with file paths, so the files read stay out of your context. Use when finding where something is defined or used, or how a part of the code works, would take several searches or file reads. Don't use it for one known file or a single quick grep, or for code you are about to edit. Pass the question as the argument.
 argument-hint: "[調べたいこと]"
-disable-model-invocation: true
 context: fork
 agent: tokenomics:scout
 ---

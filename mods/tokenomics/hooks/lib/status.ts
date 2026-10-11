@@ -9,15 +9,29 @@ export type Row = { label: string; value: string }
 
 const NONE = 'まだありません'
 
-/** What the savings layer has done today, in rows; nothing when it has done nothing yet. Dollars only off a subscription. */
+/**
+ * What the savings layer has done today, in rows; nothing when it has done nothing yet. Dollars only off a subscription.
+ * The digest's figure is a cut that happened (確定); the other is an estimate of the reading that work handed to a skill or
+ * agent kept out of the conversation, and a cautious one. They are two rows, never one total.
+ */
 export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
   const rows: Row[] = []
   if (s.digests > 0) {
     rows.push({
-      label: '今日の節約',
+      label: '今日の節約（確定）',
       value:
         `大きな出力を ${s.digests} 回縮め、約 ${formatTokens(s.tokens)} tok を会話に入れずに済みました` +
-        (isSubscription ? '' : `（見込み約 ${formatUsd(s.milliUsd / 1000)}）`),
+        (isSubscription ? '' : `（見込み約 ${formatUsd(s.milliUsd / 1000)}）`) +
+        (s.recovered > 0 ? `。あとで全文を取りに戻ったのは ${s.recovered} 回` : ''),
+    })
+  }
+  if (s.forks > 0) {
+    rows.push({
+      label: '今日の節約（推定）',
+      value:
+        `調べものやテストを ${s.forks} 回任せ、会話に入れずに済んだ読み込みは約 ${formatTokens(s.keptTokens)} tok（控えめな推定）` +
+        (isSubscription ? '' : `、見込み約 ${formatUsd(s.keptMilliUsd / 1000)}`) +
+        (s.forkReaders > 0 ? `。ファイルを読んだ ${s.forkReaders} 回のあと、会話側が同じファイルを読み直したのは ${s.forkRereads} 件` : ''),
     })
   }
   if (s.wouldFire > 0) {

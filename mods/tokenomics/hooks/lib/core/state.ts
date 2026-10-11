@@ -1,5 +1,7 @@
 import type { RecentSpawn } from './downgrade'
+import type { ForkRun } from './forks'
 import type { Candidate } from './nudges'
+import { type SteerState, freshSteer } from './steer'
 import type { HeavyLevel } from './economics'
 import { type Ledger, type RawEvent, emptyLedger, sessionKey } from './ledger'
 import type { CoreOptions } from './options'
@@ -39,6 +41,8 @@ export type CoreState = {
   recentSpawns: RecentSpawn[]
   /** Subagent id to its kind, for counting what each kind spends. */
   spawns: Map<string, string>
+  /** What each subagent has read and, once its turn ended, handed back: settled when its kind is known (`forks.ts`). */
+  forks: Map<string, ForkRun>
   /** Outputs that were cut, by tool call, to notice the model going back for them. */
   digests: Map<string, { command: string; turn: number }>
   /** Suggestions that have arisen and wait for the next reply to end. */
@@ -61,6 +65,8 @@ export type CoreState = {
   agentDone: Map<string, number>
   /** Subagent and path pairs already counted as read again. */
   rereads: Set<string>
+  /** B6: what is remembered of the searches and test runs the main conversation has made. */
+  steer: SteerState
   /** Saved outputs the model has already gone back for, so each is counted once however many pieces it reads. */
   readBack: Set<string>
 }
@@ -86,6 +92,7 @@ export const freshState = (options: CoreOptions): CoreState => ({
   lastWould: null,
   recentSpawns: [],
   spawns: new Map(),
+  forks: new Map(),
   digests: new Map(),
   candidates: [],
   shownAtTurn: null,
@@ -97,6 +104,7 @@ export const freshState = (options: CoreOptions): CoreState => ({
   agentReads: new Map(),
   agentDone: new Map(),
   rereads: new Set(),
+  steer: freshSteer(),
   readBack: new Set(),
 })
 
@@ -111,6 +119,7 @@ export const resetSession = (s: CoreState): void => {
   s.lastWould = null
   s.recentSpawns = []
   s.spawns.clear()
+  s.forks.clear()
   s.digests.clear()
   s.candidates = []
   s.shownAtTurn = null
@@ -120,6 +129,7 @@ export const resetSession = (s: CoreState): void => {
   s.agentReads.clear()
   s.agentDone.clear()
   s.rereads.clear()
+  s.steer = freshSteer()
   s.readBack.clear()
 }
 
@@ -129,6 +139,7 @@ export const resetConversation = (s: CoreState): void => {
   s.touched = []
   s.latched = null
   s.candidates = []
+  s.steer = freshSteer()
   // The size of the old window, and how long the person was away from it, say nothing of the new one.
   s.contextTokens = null
   s.lastEndedAt = null

@@ -3,7 +3,8 @@ import { describe, expect, test } from 'claude-code/testing'
 import { DIGEST, digestOutput, digestPath, isDigestFile, isInsideDir, normalizeCommand } from '../hooks/lib/core/digest'
 import { ALLOWED_TYPES, REDELEGATION_TURNS, decideSpawn, lighterTarget, similarity, typeTag } from '../hooks/lib/core/downgrade'
 import { ANSWER_TURNS, CLASSIFY, clearStakeUsd, coldReturn, pathsIn, risen, shouldClassify, topicShift } from '../hooks/lib/core/moments'
-import { type Candidate, CANDIDATE_TURNS, DEMO_LINE, MIN_GAP_TURNS, MIN_STAKE_MILLI, chooseNudge, nudgeLine } from '../hooks/lib/core/nudges'
+import { type Candidate, CANDIDATE_TURNS, DEMO_LINE, DEMO_SHORT, MIN_GAP_TURNS, MIN_STAKE_MILLI, chooseNudge, nudgeLine, nudgeShort } from '../hooks/lib/core/nudges'
+import { cellWidth, wrappedRows } from '../hooks/lib/format'
 import { cacheShare, contextBucket, idleBucket, wasCold } from '../hooks/lib/core/usage'
 
 const PATH = '/var/T/claude-tokenomics/sess-1/out-toolu_01.log'
@@ -308,5 +309,47 @@ describe('nudges', () => {
     expect(nudgeLine(cold, false, null)).not.toContain('$')
     // Nothing in any of them is typed for the person, and none tells them to press anything.
     for (const line of [nudgeLine(c(), false), nudgeLine(cold, false), DEMO_LINE]) expect(line).not.toMatch(/Enter|押して/)
+  })
+
+  test('the short lines, for the cat’s card, say the same moment and the same way out in fewer cells', () => {
+    expect(nudgeShort(c(), false)).toBe('重くなってきました（毎回 約120k tok を読み直し）。区切りで /compact を。')
+    expect(nudgeShort(c({ tag: 'strong' }), false)).toContain('/clear')
+    expect(nudgeShort(c({ measure: 'C1', tag: 'keyword' }), false)).toContain('今の回答は消えます')
+    const cold = c({ measure: 'C3', tag: '50to100k', ctx: 80_000 })
+    expect(nudgeShort(cold, false, 400)).toBe('空いたため会話全体（約80k tok）を読み直しました（約 $0.40）。別件なら /clear が一番軽いです。')
+    expect(nudgeShort(cold, true, 400)).not.toContain('$')
+    expect(nudgeShort(cold, false, null)).not.toContain('$')
+    for (const [short, long] of [
+      [nudgeShort(c(), false), nudgeLine(c(), false)],
+      [nudgeShort(c({ tag: 'strong' }), false), nudgeLine(c({ tag: 'strong' }), false)],
+      [nudgeShort(cold, false, 400), nudgeLine(cold, false, 400)],
+      [nudgeShort(c({ measure: 'C1', tag: 'keyword' }), false), nudgeLine(c({ measure: 'C1', tag: 'keyword' }), false)],
+      [DEMO_SHORT, DEMO_LINE],
+    ] as const) {
+      expect(cellWidth(short)).toBeLessThan(cellWidth(long))
+      expect(short).not.toMatch(/Enter|押して/)
+    }
+  })
+})
+
+describe('cells', () => {
+  test('a Japanese character takes two cells, anything else one', () => {
+    expect(cellWidth('')).toBe(0)
+    expect(cellWidth('abc /clear')).toBe(10)
+    expect(cellWidth('重く')).toBe(4)
+    // （ 約 and ） 。 are two each; the space, 1 and k one each.
+    expect(cellWidth('（約 1k）。')).toBe(11)
+    expect(cellWidth('ｱ')).toBe(1)
+    expect(cellWidth('ＡＢ')).toBe(4)
+  })
+
+  test('rows are counted on the safe side: a row holds one cell less than the box', () => {
+    expect(wrappedRows('', 34)).toBe(0)
+    expect(wrappedRows('a'.repeat(33), 34)).toBe(1)
+    expect(wrappedRows('a'.repeat(34), 34)).toBe(2)
+    // 17 full-width characters are 34 cells: they do not fit one row of 33.
+    expect(wrappedRows('あ'.repeat(16), 34)).toBe(1)
+    expect(wrappedRows('あ'.repeat(17), 34)).toBe(2)
+    expect(wrappedRows('あ', 0)).toBe(2)
   })
 })

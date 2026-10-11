@@ -21,6 +21,8 @@ rm -rf bench/results
 echo "== pilot report (on sample exports)"
 report="$(scripts/ledger-report.sh scripts/testdata/ledger-sample-a.json scripts/testdata/ledger-sample-b.json)"
 echo "$report" | grep -qF "参加者: 2 人" && echo "$report" | grep -qF "採用率 25%" && echo "$report" | grep -qF '$0.80' || { echo "ledger-report.sh: the sample report is not as expected" >&2; exit 1; }
+# What was handed to the skills is told as an estimate, apart from the digest's figure, and the arms are set side by side.
+echo "$report" | grep -qF "任せた 4 回" && echo "$report" | grep -qF "控えめな推定です" && echo "$report" | grep -qF "control（1 人）" && echo "$report" | grep -qF "treat（1 人）" && echo "$report" | grep -qF "止めた 4 回" && echo "$report" | grep -qF "止めた回数に対して 50%" && echo "$report" | grep -qF "止めるはずだった回数に対して 25%" || { echo "ledger-report.sh: the delegation, steering or arm sections are not as expected" >&2; exit 1; }
 # The same person twice (weekly exports overlap) is refused, not counted twice.
 if scripts/ledger-report.sh scripts/testdata/ledger-sample-a.json scripts/testdata/ledger-sample-a.json > /dev/null 2>&1; then
   echo "ledger-report.sh: one person in two files must be refused" >&2

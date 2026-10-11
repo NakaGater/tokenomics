@@ -42,13 +42,15 @@ import { DEMO_MS, type CatState, type Demo, JUMP_STEPS, catView } from './lib/pa
 import { DIGEST, digestOutput, digestPath, isDigestFile, isInsideDir, normalizeCommand } from './lib/core/digest'
 import { decideSpawn, typeTag } from './lib/core/downgrade'
 import { ASSUMED_TURNS_AFTER, coldTurnUsd, heavyLevel, keptOutUsd, milliUsd, modelFamily, warmTurnUsd } from './lib/core/economics'
+import { forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId } from './lib/core/forks'
 import { shortHash } from './lib/core/hash'
 import { type Kind, type RawEvent, appendRaw, emptyLedger, digestThreshold, exportLedger, parseLedger, retiredNudges, savingsToday, sessionKey } from './lib/core/ledger'
 import { ANSWER_TURNS, clearStakeUsd, coldReturn, risen, topicShift } from './lib/core/moments'
-import { type Candidate, DEMO_LINE, chooseNudge, nudgeLine } from './lib/core/nudges'
+import { type Candidate, DEMO_LINE, DEMO_SHORT, chooseNudge, nudgeLine, nudgeShort } from './lib/core/nudges'
 import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
 import { type MeasureId, armOf, failed, isTripped, modeOf, succeeded } from './lib/core/policy'
 import { freshState, resetConversation, resetSession, touch } from './lib/core/state'
+import { lightUse, steerAnswered, steerNote, steerStep, steerTurn } from './lib/core/steer'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
 import { report } from './lib/status'
@@ -149,6 +151,7 @@ const modelRow = atom({ plugin: 'tokenomics', key: 'modelRow' } as const, null a
 const openOffer = atom({ plugin: 'tokenomics', key: 'offer' } as const, null as OpenOffer | null)
 const seen = atom({ plugin: 'tokenomics', key: 'seen' } as const, [] as string[])
 const muted = atom({ plugin: 'tokenomics', key: 'muted' } as const, [] as OfferKind[])
+const nudge = atom({ plugin: 'tokenomics', key: 'nudge' } as const, null as string | null)
 
 /** Paints the cat's next frame and asks for the one after it, at the pace its speed calls for. */
 const stepCat = async ($: Dollar): Promise<void> => {
@@ -321,6 +324,13 @@ const closeOffer = async ($: Dollar): Promise<OpenOffer | null> => {
   return open
 }
 
+/** The one-line suggestion in the cat's card is for the moment after a reply; it goes when that moment has passed. */
+const clearNudge = async ($: Dollar): Promise<void> => {
+  if ((await read($, nudge)) === null) return
+  await update($, nudge, () => null)
+  $.ui.invalidate('ui.render')
+}
+
 /**
  * Writes the facts, then forgets the dismissals and the suggestions whose situation has ended; and
  * takes down a suggestion on screen that no longer fits, so it is never accepted for a case that has passed.
@@ -447,6 +457,7 @@ const compact = async ($: Dollar): Promise<void> => {
       $.ui.toast(say('heavy', 'いまは要約できませんでした。'))
     } else {
       await change($, f => applyCompacted(f, done.tokensAfter))
+      await clearNudge($)
       const sizes =
         done.tokensBefore !== undefined && done.tokensAfter !== undefined
           ? `（${formatTokens(done.tokensBefore)} → ${formatTokens(done.tokensAfter)} tok）`
@@ -803,8 +814,11 @@ const PERSON_KEY = 'personId'
 const FLUSH_MS = 3_000
 const FLUSH_AT = 20
 
-const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0 }
+const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 }
 const savings = atom({ plugin: 'tokenomics', key: 'savings' } as const, emptySavings)
+/** Tokens the output digest has kept out of the conversation today, as the band says them (see `svShow`). */
+let savedToday = 0
+let keptToday = 0
 
 const sv = freshState(parseOptions(undefined))
 let svReady: Promise<void> | null = null
@@ -821,7 +835,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.3.0'
+const MOD_VERSION = '0.4.0'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -849,10 +863,19 @@ const svEnsure = ($: Dollar): Promise<void> => (svReady ??= svInit($))
 
 /** Shows today's figures to whoever reads them (the pane), when they have changed. */
 const svShow = async ($: Dollar): Promise<void> => {
-  const next = savingsToday(sv.ledger, await $.clock.now())
+  const today = savingsToday(sv.ledger, await $.clock.now())
+  // A person held back from the savings (to be compared with the rest) is not shown an estimate of them either.
+  const next: Savings = sv.arm === 'control' ? { ...today, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 } : today
   const now = await read($, savings)
-  if (now.digests !== next.digests || now.tokens !== next.tokens || now.milliUsd !== next.milliUsd || now.wouldFire !== next.wouldFire) {
+  if ((Object.keys(next) as (keyof Savings)[]).some(k => now[k] !== next[k])) {
     await update($, savings, () => next)
+  }
+  // The band says the saved tokens too, and only they redraw it: the pane's other figures change more often, and
+  // nothing else redraws the band when the ledger is written. Kept apart from the atom for that reason.
+  if (next.tokens !== savedToday || next.keptTokens !== keptToday) {
+    savedToday = next.tokens
+    keptToday = next.keptTokens
+    $.ui.invalidate('ui.render')
   }
 }
 
@@ -1034,27 +1057,90 @@ const svPrompted = ($: Dollar, text: string): Promise<void> =>
     undefined,
   )
 
+/**
+ * A subagent's run, once it has ended and its kind is known: what it spent, whether it read files, and, for a skill or agent of
+ * this plugin, what it kept out of the conversation. A kind is known when the subagent was spawned as one, or, for a skill's
+ * fork, when the Skill call returns (the fork's turn ends first, `svForkStarted`); a run still unnamed when the main turn ends
+ * is the kind `custom`.
+ */
+const svSettle = async ($: Dollar, id: string): Promise<void> => {
+  const run = sv.forks.get(id)
+  if (run?.ended === undefined) return
+  sv.forks.delete(id)
+  const m = modeFor('B1')
+  if (m === 'off') return
+  const type = sv.spawns.get(id)
+  const { spent, isReader } = run.ended
+  if (type !== undefined && spent !== null) await svRecord($, 'B1', m, 'signal', type, { spent, runs: 1 }, true)
+  if (isReader) await svRecord($, 'B1', m, 'signal', `readers_${type ?? 'custom'}`, undefined, true)
+  const kept = type === undefined ? null : forkOutcome(run, type)
+  if (kept === null) return
+  await svRecord(
+    $,
+    'B1',
+    m,
+    'signal',
+    `kept_${kept.name}`,
+    {
+      keptTokens: kept.keptTokens,
+      readTokens: kept.readTokens,
+      reportTokens: kept.reportTokens,
+      keptMilliUsd: milliUsd(keptOutUsd(kept.keptTokens, sv.mainModel, ASSUMED_TURNS_AFTER)),
+    },
+    true,
+  )
+}
+
+/** Every run that ended and was never named is settled as it is. */
+const svSweep = ($: Dollar): Promise<void> =>
+  svAttempt(
+    $,
+    'B1',
+    async () => {
+      for (const [id, run] of [...sv.forks]) if (run.ended !== undefined) await svSettle($, id)
+    },
+    undefined,
+  )
+
+/**
+ * A skill of this plugin forked: the Skill call's answer names the subagent it ran in, which has usually ended already. Named,
+ * its run is settled.
+ */
+const svForkStarted = ($: Dollar, tool: string, input: Record<string, unknown>, ran: ToolCallResult, agentId: string | undefined): Promise<void> =>
+  svAttempt(
+    $,
+    'B1',
+    async () => {
+      if (agentId !== undefined || tool !== 'Skill' || ran.deny !== undefined || ran.isError === true) return
+      const used = lightUse(tool, input)
+      const id = forkedId(ran.result)
+      if (used === null || id === null) return
+      await svEnsure($)
+      sv.spawns.set(id, forkType(used))
+      await svSettle($, id)
+    },
+    undefined,
+  )
+
 /** A turn ended: what the cache did, how long the person was away, and what a subagent spent. */
-const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | undefined): Promise<void> =>
+const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | undefined, answer: string): Promise<void> =>
   svAttempt(
     $,
     'C3',
     async () => {
       await svEnsure($)
       if (agentId !== undefined) {
-        const type = sv.spawns.get(agentId)
-        if (type !== undefined && usage !== undefined) {
-          const spent = usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
-          await svRecord($, 'B1', modeFor('B1'), 'signal', type, { spent, runs: 1 }, true)
-        }
-        if ((sv.agentReads.get(agentId)?.size ?? 0) > 0) {
-          sv.agentDone.set(agentId, sv.turnIndex)
-          await svRecord($, 'B1', modeFor('B1'), 'signal', `readers_${type ?? 'custom'}`, undefined, true)
-        }
+        const isReader = (sv.agentReads.get(agentId)?.size ?? 0) > 0
+        if (isReader) sv.agentDone.set(agentId, sv.turnIndex)
+        const spent = usage === undefined ? null : usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
+        sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex }))
+        // Named already (spawned as a kind): settled now. A skill's fork is named when the Skill call returns, which is after this.
+        if (sv.spawns.has(agentId)) await svAttempt($, 'B1', () => svSettle($, agentId), undefined)
         return
       }
       sv.turnIndex += 1
       sv.isColdTurn = false
+      await svSweep($)
       for (const [id, done] of sv.agentDone) {
         if (sv.turnIndex - done <= ANSWER_TURNS + 2) continue
         sv.agentDone.delete(id)
@@ -1079,18 +1165,21 @@ const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | u
         sv.lastShown = null
       }
       if (sv.isColdTurn) {
-        await svRecord($, 'S', 'observe', 'signal', `cold_${contextBucket(prompt)}`, { prompt, costMilliUsd: milliUsd(coldTurnUsd(prompt, usage.model)) })
+        await svRecord($, 'S', 'observe', 'signal', `cold_${contextBucket(prompt)}`, { coldPrompt: prompt, costMilliUsd: milliUsd(coldTurnUsd(prompt, usage.model)) })
       }
       sv.lastIdleMs = null
     },
     undefined,
   )
 
+/** A suggestion in two lengths: `long` as a row of its own after the reply (where there is no card), `short` for the cat's card. */
+type NudgeText = { long: string; short: string }
+
 /**
  * The line that ends a reply, if the moment calls for one: the suggestions that arose are weighed against what each would spare
  * (lib/core/nudges), and at most one is made. Those held back are noted as having been wanted. Nothing is typed for the person.
  */
-const svNudge = ($: Dollar, usage: TurnUsage | undefined): Promise<string | undefined> =>
+const svNudge = ($: Dollar, usage: TurnUsage | undefined): Promise<NudgeText | undefined> =>
   svAttempt(
     $,
     'C2',
@@ -1098,7 +1187,7 @@ const svNudge = ($: Dollar, usage: TurnUsage | undefined): Promise<string | unde
       if (sv.demoNudge) {
         sv.demoNudge = false
         await svRecord($, 'S', 'observe', 'signal', 'nudge_test', undefined, true)
-        return DEMO_LINE
+        return { long: DEMO_LINE, short: DEMO_SHORT }
       }
       if (sv.candidates.length === 0) return undefined
       const choice = chooseNudge(sv.candidates, { turn: sv.turnIndex, lastShownTurn: sv.shownAtTurn, isSubscription: sv.isSubscription, isColdTurn: sv.isColdTurn })
@@ -1116,9 +1205,11 @@ const svNudge = ($: Dollar, usage: TurnUsage | undefined): Promise<string | unde
       sv.shownAtTurn = sv.turnIndex
       sv.lastShown = { measure: c.measure, turn: sv.turnIndex }
       await svRecord($, c.measure, 'suggest', 'shown', c.tag, { ctx: c.ctx, stakeMilliUsd: c.stakeMilliUsd ?? 0 })
-      if (c.measure !== 'C3' || usage === undefined) return nudgeLine(c, sv.isSubscription)
+      if (c.measure !== 'C3' || usage === undefined) return { long: nudgeLine(c, sv.isSubscription), short: nudgeShort(c, sv.isSubscription) }
       // This one speaks of the turn that has just ended: how big it was, and what the lapse cost.
-      return nudgeLine({ ...c, ctx: prompt }, sv.isSubscription, milliUsd(coldTurnUsd(prompt, usage.model)))
+      const cost = milliUsd(coldTurnUsd(prompt, usage.model))
+      const ended = { ...c, ctx: prompt }
+      return { long: nudgeLine(ended, sv.isSubscription, cost), short: nudgeShort(ended, sv.isSubscription, cost) }
     },
     undefined,
   )
@@ -1167,13 +1258,64 @@ const svStepped = async ($: Dollar, usedAdvisor: boolean): Promise<void> => {
   if (usedAdvisor) await svRecord($, 'S', 'observe', 'signal', 'advisor', { ctx: sv.contextTokens ?? 0 })
 }
 
+/**
+ * B6: before a tool call of the main conversation. A search it keeps making, or a whole test run, is turned back once with the
+ * light skill named (the note is the answer); the same call made again runs. A subagent's calls are never touched, the ones the
+ * skills fork among them. A call of the plugin's own skill is no search; it is counted once it has run (`svLaunched`).
+ */
+const svSteer = ($: Dollar, tool: string, input: Record<string, unknown>, agentId: string | undefined): Promise<string | undefined> =>
+  svAttempt(
+    $,
+    'B6',
+    async () => {
+      if (agentId !== undefined) return undefined
+      await svEnsure($)
+      const m = modeFor('B6')
+      if (m === 'off') return undefined
+      if (lightUse(tool, input) !== null) return undefined
+      const verdict = steerStep(sv.steer, tool, input, sv.turnIndex, m !== 'auto')
+      sv.steer = verdict.next
+      if (verdict.say === 'insist') await svRecord($, 'B6', m, 'outcome', `insisted_${verdict.kind}`)
+      if (verdict.say !== 'refuse') return undefined
+      await svRecord($, 'B6', m, m === 'auto' ? 'fired' : 'would', verdict.kind, { searches: verdict.searches })
+
+      return m === 'auto' ? steerNote(verdict.kind, verdict.searches) : undefined
+    },
+    undefined,
+  )
+
+/**
+ * B6: after a call of the main conversation. A skill or agent of this plugin that started is used; one the engine turned away
+ * (a registry out of date, a skill the model may not call) is not, however it was meant. Used soon after a call was turned
+ * back, it is the answer to it.
+ */
+const svLaunched = ($: Dollar, tool: string, input: Record<string, unknown>, ran: ToolCallResult, agentId: string | undefined): Promise<void> =>
+  svAttempt(
+    $,
+    'B6',
+    async () => {
+      if (agentId !== undefined || ran.deny !== undefined || ran.isError === true) return
+      const used = lightUse(tool, input)
+      if (used === null) return
+      await svEnsure($)
+      const m = modeFor('B6')
+      if (m === 'off') return
+      await svRecord($, 'B6', m, 'signal', `used_${used}`)
+      const answered = steerAnswered(sv.steer, sv.turnIndex)
+      sv.steer = answered.next
+      if (answered.kind !== null) await svRecord($, 'B6', m, 'outcome', `adopted_${answered.kind}`)
+    },
+    undefined,
+  )
+
 /** Before a tool call: the model going back for what a digest cut is noted, and the files the work touches. */
 const svWatchCall = async ($: Dollar, tool: string, input: Record<string, unknown>, agentId: string | undefined): Promise<void> => {
   await svEnsure($)
   const m = modeFor('A1')
   // The work changed since an output was cut: running the same command again is the loop of editing and testing, not going back for the rest.
   if (['Edit', 'Write', 'NotebookEdit', 'MultiEdit'].includes(tool)) sv.digests.clear()
-  if (m !== 'off') {
+  // Whether the conversation went back for what was cut is about its own cuts; a subagent running the same command is not that.
+  if (m !== 'off' && agentId === undefined) {
     if (tool === 'Bash' && typeof input.command === 'string') {
       const command = shortHash(normalizeCommand(input.command))
       for (const [id, d] of sv.digests) {
@@ -1217,7 +1359,13 @@ const svWatchReads = async ($: Dollar, path: string, agentId: string | undefined
 }
 
 /** After a Bash call: a large output reaches the model cut down to what it needs, its full text kept in a file. */
-const svDigestBash = async ($: Dollar, toolUseId: string, command: string, ran: ToolCallResult): Promise<ToolCallResult> => {
+const svDigestBash = async (
+  $: Dollar,
+  toolUseId: string,
+  command: string,
+  ran: ToolCallResult,
+  agentId: string | undefined,
+): Promise<ToolCallResult> => {
   await svEnsure($)
   const m = modeFor('A1')
   if (m === 'off') return ran
@@ -1246,6 +1394,17 @@ const svDigestBash = async ($: Dollar, toolUseId: string, command: string, ran: 
     savedTokens,
     savedMilliUsd: milliUsd(keptOutUsd(savedTokens, sv.mainModel, ASSUMED_TURNS_AFTER)),
   }
+  if (agentId !== undefined) {
+    // A subagent's output is cut too (its context is the smaller for it) but the conversation would never have read it: counted
+    // apart, so it is not in the figure shown as confirmed, and not in what the model going back for a cut output is measured on.
+    // What it reads after the cut is in its run's `readTokens` (lib/core/forks).
+    if (at === 'auto') {
+      await $.fs.write(path, out)
+      await svRecord($, 'A1', 'auto', 'signal', 'sub_cut', { subSavedTokens: n.savedTokens }, true)
+      return { ...ran, result: { ...result, stdout: cut.text }, text: cut.text } as typeof ran
+    }
+    return ran
+  }
   if (at !== 'auto') {
     // Named apart from the `fired` sums: what was not cut is not counted as spared.
     await svRecord($, 'A1', at, 'would', undefined, { inChars: n.inChars, outChars: n.outChars, wouldTokens: n.savedTokens, wouldMilliUsd: n.savedMilliUsd })
@@ -1264,6 +1423,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     resetCat()
+    await clearNudge($)
     const likely = await imagesLikely($)
     if (likely !== imageHint) {
       imageHint = likely
@@ -1308,7 +1468,11 @@ export const register: Register = (on, options) => {
     }
     if (word === 'nudge-test') {
       sv.demoNudge = true
-      return { text: '次の返信のあとに、提案の表示テストが一行出ます。' }
+      return {
+        text: isHud
+          ? '次の返信のあと、猫のカードの一言（「小走りです」などが出ている所）に、提案の表示テストが出ます。'
+          : '次の返信のあとに、提案の表示テストが一行出ます。',
+      }
     }
     const opened = isHud ? await openPane($) : { isPlaced: false }
     if (opened.isPlaced) return {}
@@ -1323,6 +1487,7 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     isTurnRunning = true
     toolsThisTurn = 0
+    sv.steer = steerTurn(sv.steer)
     nudgeCat($)
 
     return next(e)
@@ -1357,12 +1522,17 @@ export const register: Register = (on, options) => {
       nudgeCat($)
       await maybeOffer($)
     }
-    await svTurnDone($, e.agentId, e.usage)
+    await svTurnDone($, e.agentId, e.usage, e.answer)
     const done = await next(e)
-    // A line of the mod's own beneath the reply (the reply itself is left as it is). Only a reply that ended in an answer.
+    // A one-line suggestion (the reply itself is left as it is). Only a reply that ended in an answer.
     const line = e.agentId === undefined && e.reason === 'answer' ? await svNudge($, e.usage) : undefined
+    if (line === undefined) return done
+    // With the cat on it stands in the cat's card, in place of the phrase; with it off there is no card, and it is a row after the reply.
+    if (!isHud) return { ...done, text: line.long }
+    await update($, nudge, () => line.short)
+    $.ui.invalidate('ui.render')
 
-    return line === undefined ? done : { ...done, text: line }
+    return done
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -1377,6 +1547,7 @@ export const register: Register = (on, options) => {
         await change($, f => applyPrompt(f, now, THRESHOLDS.idleMs, THRESHOLDS.coldCacheContextTokens, e.text.length))
         // The person has gone on: a suggestion left on screen is for a moment that has passed.
         await closeOffer($)
+        await clearNudge($)
         await svPrompted($, e.text)
       } else {
         // The pause before it counts toward a lapsed cache (a /loop firing after a break reads it all again); no more.
@@ -1389,14 +1560,23 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', async ($, e, next) => {
+    // Before anything is counted or run: a call turned back is neither.
+    const note = await svSteer($, String(e.tool), e as unknown as Record<string, unknown>, e.agentId)
+    if (note !== undefined) return { deny: note }
     try {
       await svWatchCall($, String(e.tool), e as unknown as Record<string, unknown>, e.agentId)
     } catch {
       // Only a note of what the call touches; the call goes ahead. (Not through the breaker: its successes would hide the digest's failures.)
     }
     const raw = await next(e)
+    await svLaunched($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
+    await svForkStarted($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
     // A large command output is cut down first, so what is counted below is what the model reads. A subagent's too.
-    const ran = e.tool === 'Bash' && raw.deny === undefined ? await svAttempt($, 'A1', () => svDigestBash($, e.tool_use_id, e.command, raw), raw) : raw
+    const ran = e.tool === 'Bash' && raw.deny === undefined ? await svAttempt($, 'A1', () => svDigestBash($, e.tool_use_id, e.command, raw, e.agentId), raw) : raw
+    // What a subagent's tool results held is what its report spares the conversation (lib/core/forks).
+    if (e.agentId !== undefined && ran.deny === undefined && typeof ran.text === 'string') {
+      sv.forks = forkSet(sv.forks, e.agentId, forkRead(sv.forks.get(e.agentId), estimateTokens(ran.text)))
+    }
     if (e.agentId !== undefined || ran.deny !== undefined) return ran
 
     toolsThisTurn += 1
@@ -1443,6 +1623,7 @@ export const register: Register = (on, options) => {
     // A `precompute` installs nothing: the window has not shrunk. Only a compaction the person typed counts as their answer.
     if (e.agentId === undefined && done.skip === undefined && e.trigger !== 'precompute') {
       await change($, f => applyCompacted(f, done.tokensAfter))
+      await clearNudge($)
       jumpCat($)
       if (e.trigger === 'manual') await svAttempt($, 'C2', () => svAnswered($), undefined)
     }
@@ -1585,6 +1766,7 @@ export const register: Register = (on, options) => {
     // /clear goes on in the same session; every other end is the end of the switches made in it.
     if (e.reason === 'clear') {
       await change($, applyCleared)
+      await clearNudge($)
       jumpCat($)
       await svAttempt($, 'C1', () => svAnswered($), undefined)
       resetConversation(sv)
@@ -1592,6 +1774,7 @@ export const register: Register = (on, options) => {
       stopCat()
       await restorePending($)
     }
+    await svSweep($)
     await svFlush($)
 
     return next(e)
@@ -1663,6 +1846,9 @@ export const register: Register = (on, options) => {
       },
       facts: f,
       advice: nextAdvice(f, [...(await read($, dismissed)), ...(modeFor('C3') === 'suggest' ? ['cache-lapse'] : [])]),
+      nudge: await read($, nudge),
+      savedTokens: savedToday,
+      keptTokens: keptToday,
       offer: card,
       tag: tagOf(await read($, modes)),
       isCompacting: (await read($, busy)) === 'compact',

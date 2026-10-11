@@ -1,9 +1,9 @@
 import { type Engine, expect, test } from 'claude-code/testing'
 
-import { DEMO_LINE } from '../hooks/lib/core/nudges'
+import { DEMO_LINE, DEMO_SHORT } from '../hooks/lib/core/nudges'
 import { type Ledger, append, emptyLedger, parseLedger, retiredNudges, savingsToday } from '../hooks/lib/core/ledger'
 
-import { type Calls, bandProps, engine, measure, paneProps, runStep } from './kit'
+import { type Calls, SURFACES, bandProps, engine, measure, nudgeIn, paneProps, phraseIn, runStep, savedIn } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 const TMP = '/tmp/T'
@@ -166,6 +166,34 @@ test('a subagent’s big output is cut too, and the model may read it back witho
   const check = await $.tool.check({ tool: 'Read', input: { file_path: `${DIR}/out-sub_1.log` } } as never)
   expect(check.decision).toBe('allow')
   expect(calls.writes.some(w => w.path === `${DIR}/out-sub_1.log`)).toBe(true)
+})
+
+test('a subagent’s cut is not in the confirmed figure: the conversation would never have read that output', AUTO, async ($, on) => {
+  const calls = engine(on, { tmp: TMP })
+  on('tool.call', () => bash(log()))
+  await $.session.start(START)
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'sub_1', command: 'bun test', agentId: 'ag1' } as never)
+  const ledger = await ledgerOf($, calls)
+  expect(count(ledger, 'A1:fired:auto')).toBe(0)
+  expect(sum(ledger, 'A1:savedTokens')).toBe(0)
+  expect(sum(ledger, 'A1:savedMilliUsd')).toBe(0)
+  expect(count(ledger, 'A1:signal:auto:sub_cut')).toBe(1)
+  expect(sum(ledger, 'A1:subSavedTokens')).toBeGreaterThan(10_000)
+  expect(savingsToday(ledger, 1_000_000)).toMatchObject({ digests: 0, tokens: 0, milliUsd: 0 })
+})
+
+test('a subagent running the command the conversation had cut, or reading the saved file, is not the conversation going back', AUTO, async ($, on) => {
+  const calls = engine(on, { tmp: TMP })
+  on('tool.call', () => bash(log()))
+  await $.session.start(START)
+
+  await callBash($, 'toolu_1')
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'sub_1', command: 'bun test', agentId: 'ag1' } as never)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'sub_r', file_path: `${DIR}/out-toolu_1.log`, agentId: 'ag1' } as never)
+  const ledger = await ledgerOf($, calls)
+  expect(count(ledger, 'A1:outcome:auto:rerun')).toBe(0)
+  expect(count(ledger, 'A1:outcome:auto:readback')).toBe(0)
 })
 
 test('reading is allowed only for the saved outputs, only when it would have asked, and a refusal stands', AUTO, async ($, on) => {
@@ -426,6 +454,9 @@ test('a turn that comes after a pause and writes its prompt into the cache again
   // 61,100 tokens written at $5 a million: $0.3055.
   expect(sum(ledger, 'S:costMilliUsd')).toBe(306)
   expect(count(ledger, 'S:signal:observe:turn')).toBe(2)
+  // Each turn's prompt is summed once: the cold turn's own record keeps its prompt under another name.
+  expect(sum(ledger, 'S:prompt')).toBe(5_100 + 61_100)
+  expect(sum(ledger, 'S:coldPrompt')).toBe(61_100)
 })
 
 test('a fresh start soon after a suggestion that would have been made is counted as the answer', async ($, on) => {
@@ -517,6 +548,36 @@ test('the text report, for a terminal too narrow for a pane, says it too', AUTO,
   expect(ran.text).toContain('大きな出力を 1 回縮め')
 })
 
+test('the band says what the digest has kept out of the conversation today, on the card and on the plain row', AUTO, async ($, on) => {
+  const calls = engine(on, { tmp: TMP })
+  on('tool.call', () => bash(log()))
+  await $.session.start(START)
+
+  const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
+  for (const ui of bands) expect(await savedIn(ui)).toBeUndefined()
+
+  await callBash($, 'a')
+  await calls.clock.advance(4_000)
+
+  const saved = sum(parseLedger(calls.store.get('ledger:v1')), 'A1:savedTokens')
+  expect(saved).toBeGreaterThan(10_000)
+  for (const ui of bands) expect(await savedIn(ui)).toBe(`約 ${Math.round(saved / 1000)}k tok`)
+})
+
+for (const digest of ['observe', 'off'] as const) {
+  test(`the band keeps quiet about savings where nothing was cut: the digest set to ${digest}`, { options: { digest } }, async ($, on) => {
+    const calls = engine(on, { tmp: TMP })
+    on('tool.call', () => bash(log()))
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+    await callBash($, 'a')
+    await calls.clock.advance(4_000)
+    expect(await savedIn(ui)).toBeUndefined()
+    // The band itself is there, with its other figures.
+    expect(await ui.find({ type: 'Text', text: '今回' })).toBeDefined()
+  })
+}
+
 const LIGHT = (agent: string) => ({ agent, description: '', source: 'plugin', provider: { plugin: 'tokenomics', tier: 'user' } }) as never
 
 test('the light agents are not offered to the model until delegation is on: no unmeasured delegation, no borrowed permissions', async ($, on) => {
@@ -551,14 +612,24 @@ const reply = ($: Driver, id: string, usage = SMALL) =>
   $.turn.complete({ answer: 'the answer', durationMs: 1, isAborted: false, turnId: id, reason: 'answer', usage } as never) as Promise<{ text: string }>
 const subscription = (percent: number) => ({ ...measure.context(percent), rateLimits: [{ kind: 'five_hour', percentUsed: 10 }], changed: ['context', 'rateLimits'] as ['context', 'rateLimits'] })
 
-test('suggest: a conversation that has grown heavy ends a reply with one line, and the reply itself is as it was', SUGGEST, async ($, on) => {
+/** The band above the prompt, as the terminal draws it (the cat's card). */
+const band = ($: Driver, over: Parameters<typeof bandProps>[0] = {}) => $.ui.mount({ ...bandProps(over), surface: 'terminal' })
+
+test('suggest: a conversation that has grown heavy puts one line in the cat’s card, and the reply itself is as it was', SUGGEST, async ($, on) => {
   const calls = engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await $.session.measure(measure.context(55))
   await ask($, 'next please')
+  expect(await nudgeIn(ui)).toBeUndefined()
+  expect(await phraseIn(ui)).toBeDefined()
 
   const done = await reply($, 't1')
-  expect(done.text).toBe('会話が重くなってきました（返信のたびに約 110k tok を読み直します）。区切りのよいところで /compact を。')
+  expect(done.text).toBe('the answer')
+  // It stands where the cat’s phrase stood, which is gone while it shows.
+  expect(await nudgeIn(ui)).toBe('重くなってきました（毎回 約110k tok を読み直し）。区切りで /compact を。')
+  expect(await phraseIn(ui)).toBeUndefined()
+  expect(await ui.find({ type: 'Raster', key: 'cat' })).toBeDefined()
   // Nothing is typed into the prompt for the person to press Enter on.
   expect(calls.filled).toEqual([])
   const ledger = await ledgerOf($, calls)
@@ -566,11 +637,69 @@ test('suggest: a conversation that has grown heavy ends a reply with one line, a
   expect(count(ledger, 'C2:would:suggest:notice')).toBe(0)
 })
 
+test('suggest, with the cat off: there is no card, so the suggestion is a row after the reply, in its long form', { options: { nudges: 'suggest', hud: false } }, async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+  await $.session.measure(measure.context(55))
+
+  expect((await reply($, 't1')).text).toBe('会話が重くなってきました（返信のたびに約 110k tok を読み直します）。区切りのよいところで /compact を。')
+})
+
+test('suggest: the line in the card is for the moment after the reply: the next prompt, /clear and a compaction each take it down', SUGGEST, async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+  const ui = await band($)
+  await $.session.measure(measure.context(55))
+  await reply($, 't1')
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
+
+  // A command is not a move to a new subject: the line stays.
+  await $.prompt.submit({ text: '/status', wait: false, origin: { kind: 'composer' } } as never)
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
+  await ask($, 'and then?')
+  expect(await nudgeIn(ui)).toBeUndefined()
+  expect(await phraseIn(ui)).toBeDefined()
+
+  // The same moment again, three turns on: it is taken down by /clear ...
+  for (const id of ['q2', 'q3']) await reply($, id)
+  await $.session.measure(measure.context(5))
+  await $.session.measure(measure.context(55))
+  await reply($, 't4')
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
+  await $.session.end({ reason: 'clear' } as never)
+  expect(await nudgeIn(ui)).toBeUndefined()
+
+  // ... and by a compaction the person asked for.
+  for (const id of ['r1', 'r2', 'r3']) await reply($, id)
+  await $.session.measure(measure.context(5))
+  await $.session.measure(measure.context(55))
+  await reply($, 't8')
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hello', toolUses: [] }] } as never)
+  expect(await nudgeIn(ui)).toBeUndefined()
+})
+
+test('suggest: while a turn runs the line waits, and it is back when the turn is over', SUGGEST, async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+  await $.session.measure(measure.context(55))
+  await reply($, 't1')
+
+  const working = await band($, { isWorking: true })
+  expect(await nudgeIn(working)).toBeUndefined()
+  expect(await phraseIn(working)).toBeDefined()
+  await working.unmount()
+  const idle = await band($)
+  expect(await nudgeIn(idle)).toContain('重くなってきました')
+})
+
 test('suggest: a second suggestion within three turns is held back, and a reply with nothing to say has no line', SUGGEST, async ($, on) => {
   const calls = engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await $.session.measure(measure.context(55))
-  expect((await reply($, 't1')).text).toContain('重くなってきました')
+  await reply($, 't1')
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
   await $.session.measure(measure.context(100))
   const second = await reply($, 't2')
   // The strong one was held for the gap, so this reply is the answer alone.
@@ -583,11 +712,13 @@ test('suggest: a second suggestion within three turns is held back, and a reply 
 test('suggest: on an API key what would be spared must be worth a line: a small conversation on a cheap model is not', SUGGEST, async ($, on) => {
   const calls = engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await runStep($, { model: 'claude-sonnet-5-5' })
   await $.session.measure(measure.context(20))
   await ask($, '別件ですが、請求書のPDF出力を作ってください')
 
   expect((await reply($, 't1', { ...SMALL, model: 'claude-sonnet-5-5' })).text).toBe('the answer')
+  expect(await nudgeIn(ui)).toBeUndefined()
   const ledger = await ledgerOf($, calls)
   expect(count(ledger, 'C1:would:suggest:keyword')).toBe(1)
   expect(count(ledger, 'S:signal:observe:held_stake')).toBe(1)
@@ -596,17 +727,19 @@ test('suggest: on an API key what would be spared must be worth a line: a small 
 test('suggest: the same moment on a subscription is worth a line, since tokens are what it spends', SUGGEST, async ($, on) => {
   engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await runStep($, { model: 'claude-sonnet-5-5' })
   await $.session.measure(subscription(20))
   await ask($, '別件ですが、請求書のPDF出力を作ってください')
 
-  const done = await reply($, 't1', { ...SMALL, model: 'claude-sonnet-5-5' })
-  expect(done.text).toContain('別件のようです')
+  await reply($, 't1', { ...SMALL, model: 'claude-sonnet-5-5' })
+  expect(await nudgeIn(ui)).toContain('別件のようです')
 })
 
 test('suggest: a lapsed cache is spoken of only if the reply really did re-read the conversation, and says what it cost', SUGGEST, async ($, on) => {
   const calls = engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await $.session.measure(measure.context(40))
   await ask($, 'continue')
   await reply($, 't1')
@@ -614,24 +747,29 @@ test('suggest: a lapsed cache is spoken of only if the reply really did re-read 
   await ask($, 'continue')
   // The cache survived (a long cache lifetime, say): nothing to say.
   expect((await reply($, 't2')).text).toBe('the answer')
+  expect(await nudgeIn(ui)).toBeUndefined()
 
   await calls.clock.advance(10 * 60_000)
   await ask($, 'continue')
-  const cold = await reply($, 't3', COLD)
-  expect(cold.text).toContain('読み直しました（約 $0.41）')
-  expect(cold.text).toContain('約 81k tok')
+  await reply($, 't3', COLD)
+  const cold = await nudgeIn(ui)
+  expect(cold).toContain('読み直しました（約 $0.41）')
+  expect(cold).toContain('約81k tok')
 })
 
 test('suggest: a subagent’s turn and a turn that did not end in an answer get no line', SUGGEST, async ($, on) => {
   engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await $.session.measure(measure.context(55))
 
   const sub = await $.turn.complete({ answer: 'r', durationMs: 1, isAborted: false, turnId: 'x', reason: 'answer', agentId: 'ag1', usage: SMALL } as never)
   expect(sub.text).toBe('r')
   const stopped = await $.turn.complete({ answer: 'half', durationMs: 1, isAborted: true, turnId: 'y', reason: 'aborted', usage: SMALL } as never)
   expect(stopped.text).toBe('half')
-  expect((await reply($, 't1')).text).toContain('重くなってきました')
+  expect(await nudgeIn(ui)).toBeUndefined()
+  await reply($, 't1')
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
 })
 
 test('suggest: followed within a few turns it is counted as taken up; left alone, as passed over', SUGGEST, async ($, on) => {
@@ -703,12 +841,27 @@ test('by default nothing is said: the setting is observe', async ($, on) => {
 test('/tokenomics nudge-test shows the line once, wherever the setting stands, so it can be seen on screen', async ($, on) => {
   const calls = engine(on)
   await $.session.start(START)
+  const ui = await band($)
 
   const ran = await $.command.run({ ...RUN, args: 'nudge-test' } as never)
   expect(ran.text).toContain('提案の表示テスト')
+  expect(ran.text).toContain('猫のカード')
+  expect((await reply($, 't1')).text).toBe('the answer')
+  expect(await nudgeIn(ui)).toBe(DEMO_SHORT)
+  await ask($, 'next')
+  expect((await reply($, 't2')).text).toBe('the answer')
+  expect(await nudgeIn(ui)).toBeUndefined()
+  expect(count(await ledgerOf($, calls), 'S:signal:observe:nudge_test')).toBe(1)
+})
+
+test('/tokenomics nudge-test, with the cat off, shows the long line as a row after the reply', { options: { hud: false } }, async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+
+  const ran = await $.command.run({ ...RUN, args: 'nudge-test' } as never)
+  expect(ran.text).toContain('一行')
   expect((await reply($, 't1')).text).toBe(DEMO_LINE)
   expect((await reply($, 't2')).text).toBe('the answer')
-  expect(count(await ledgerOf($, calls), 'S:signal:observe:nudge_test')).toBe(1)
 })
 
 test('/tokenomics export hands over the ledger: counts and sums with the settings, and nothing of the work', AUTO, async ($, on) => {
@@ -799,10 +952,12 @@ test('a subagent type a person defined, or another plugin’s, is never named in
 test('suggest: the dialogs that say the same as a one-line suggestion are not opened, so nobody is asked twice', SUGGEST, async ($, on) => {
   const calls = engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await $.session.measure(measure.context(78))
 
   expect(dialogs(calls)).toBe(0)
-  expect((await reply($, 't1')).text).toContain('会話')
+  await reply($, 't1')
+  expect(await nudgeIn(ui)).toContain('重く')
 })
 
 test('suggest: a kind that has been given up is back to the old dialog', SUGGEST, async ($, on) => {
@@ -914,25 +1069,29 @@ test('what was not cut is not counted as spared: observe keeps its figures apart
   const calls = engine(on, { tmp: TMP })
   on('tool.call', () => bash(log()))
   await $.session.start(START)
-  await callBash($, 'a')
+  // Not a whole test run, which the steering would note as well.
+  await callBash($, 'a', 'cat build.log')
 
   const ledger = await ledgerOf($, calls)
   expect(count(ledger, 'A1:would:observe')).toBe(1)
   expect(sum(ledger, 'A1:savedTokens')).toBe(0)
   expect(sum(ledger, 'A1:wouldTokens')).toBeGreaterThan(10_000)
-  expect(savingsToday(ledger, ledger.recent[0]!.t)).toEqual({ digests: 0, tokens: 0, milliUsd: 0, wouldFire: 1 })
+  expect(savingsToday(ledger, ledger.recent[0]!.t)).toEqual({ digests: 0, tokens: 0, milliUsd: 0, wouldFire: 1, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 })
 })
 
 test('a suggestion replaced by the next at the shortest gap, with nothing done in between, is counted as passed over', SUGGEST, async ($, on) => {
   const calls = engine(on)
   await $.session.start(START)
+  const ui = await band($)
   await $.session.measure(measure.context(55))
-  expect((await reply($, 't1')).text).toContain('重くなってきました')
+  await reply($, 't1')
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
   for (const id of ['q2', 'q3']) await reply($, id)
   await $.session.measure(measure.context(5))
   await $.session.measure(measure.context(55))
   // Three turns after the first: the gap allows it, and the first was never answered.
-  expect((await reply($, 't4')).text).toContain('重くなってきました')
+  await reply($, 't4')
+  expect(await nudgeIn(ui)).toContain('重くなってきました')
   for (const id of ['q5', 'q6', 'q7', 'q8']) await reply($, id)
 
   const ledger = await ledgerOf($, calls)

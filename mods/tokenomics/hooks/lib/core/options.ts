@@ -11,6 +11,8 @@ export type CoreOptions = {
   digest: 'off' | 'observe' | 'auto'
   /** B1 and B2: a subagent runs on a lighter model and thinks less. */
   delegation: 'off' | 'observe' | 'auto'
+  /** B6: the main conversation's own search or whole test run is turned back once, with the light skill (scout, test-summary) named. */
+  steer: 'off' | 'observe' | 'auto'
   /** C1 to C3: one-line suggestions. `observe` only notes, in the ledger, when one would have been made; `suggest` makes it, after a reply. */
   nudges: 'off' | 'observe' | 'suggest'
   /** Share of people (0 to 100) who get no intervention at all, so the savings can be measured against them. */
@@ -23,6 +25,7 @@ export const DEFAULT_OPTIONS: CoreOptions = {
   hud: true,
   digest: 'auto',
   delegation: 'observe',
+  steer: 'observe',
   nudges: 'observe',
   holdoutPercent: 0,
   cacheTtlMinutes: 0,
@@ -41,6 +44,7 @@ export const parseOptions = (raw: PluginOptions | undefined): CoreOptions => {
     hud: typeof o.hud === 'boolean' ? o.hud : DEFAULT_OPTIONS.hud,
     digest: pick(o.digest, ['off', 'observe', 'auto'], DEFAULT_OPTIONS.digest),
     delegation: pick(o.delegation, ['off', 'observe', 'auto'], DEFAULT_OPTIONS.delegation),
+    steer: pick(o.steer, ['off', 'observe', 'auto'], DEFAULT_OPTIONS.steer),
     nudges: pick(o.nudges, ['off', 'observe', 'suggest'], DEFAULT_OPTIONS.nudges),
     holdoutPercent: number(o.holdoutPercent, 0, 100, DEFAULT_OPTIONS.holdoutPercent),
     cacheTtlMinutes: number(o.cacheTtlMinutes, 0, 120, DEFAULT_OPTIONS.cacheTtlMinutes),

@@ -1,5 +1,6 @@
 import type { Savings } from '../../../types'
 
+import { ownName } from './forks'
 import { shortHash } from './hash'
 import type { Mode } from './options'
 import type { Arm } from './policy'
@@ -167,11 +168,30 @@ export const digestThreshold = (ledger: Ledger, now: number, base: number): numb
   return rate > 0.25 ? base * 2 : base
 }
 
+/** A key `measure:kind:mode[:tag]` taken apart; the tag may hold colons (`tokenomics:scout`). */
+const partsOf = (key: string): { measure: string; kind: string; tag: string } => {
+  const [measure = '', kind = '', , ...tag] = key.split(':')
+  return { measure, kind, tag: tag.join(':') }
+}
+
+/** Whether a count's key is `kind` of `measure` whose tag begins with `prefix` and names a skill or agent of this plugin after it. */
+const isOwnFork = (key: string, measure: string, kind: string, prefix: string): boolean => {
+  const p = partsOf(key)
+  return p.measure === measure && p.kind === kind && p.tag.startsWith(prefix) && ownName(p.tag.slice(prefix.length)) !== null
+}
+
 export const savingsToday = (ledger: Ledger, now: number): Savings => ({
   digests: sumCounts(ledger, now, 1, k => k.startsWith('A1:fired:')),
   tokens: sumOf(ledger, now, 1, 'A1:savedTokens'),
   milliUsd: sumOf(ledger, now, 1, 'A1:savedMilliUsd'),
   wouldFire: sumCounts(ledger, now, 1, k => k.split(':')[1] === 'would'),
+  recovered: sumCounts(ledger, now, 1, k => k.startsWith('A1:outcome:') && (k.endsWith(':rerun') || k.endsWith(':readback'))),
+  // Never added to the digest's figures: those are cuts that happened, these are reads the conversation was spared by estimate.
+  forks: sumCounts(ledger, now, 1, k => partsOf(k).measure === 'B1' && partsOf(k).kind === 'signal' && partsOf(k).tag.startsWith('kept_')),
+  keptTokens: sumOf(ledger, now, 1, 'B1:keptTokens'),
+  keptMilliUsd: sumOf(ledger, now, 1, 'B1:keptMilliUsd'),
+  forkReaders: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'signal', 'readers_')),
+  forkRereads: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'outcome', 'reread_')),
 })
 
 /** How a kind of suggestion has fared over the last two weeks: made, followed within a few turns, and left unanswered. */

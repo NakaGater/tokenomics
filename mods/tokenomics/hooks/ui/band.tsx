@@ -1,7 +1,7 @@
 import type { Facts } from '../../types'
 import { type Advice, THRESHOLDS, contextLevel, scaledPercent } from '../lib/advice'
 import { CAT_COLS, CAT_ROWS } from '../lib/cat'
-import { bar, formatTokens, formatUsd, limitLabel } from '../lib/format'
+import { bar, formatTokens, formatUsd, limitLabel, wrappedRows } from '../lib/format'
 import { gaugeCells } from '../lib/gauge'
 import { FACE, FACE_CELLS, FACE_STYLE, moodOf } from '../lib/mascot'
 import type { Offer } from '../lib/offers'
@@ -20,6 +20,21 @@ export type BandProps = {
   cat: { cells: string; png: string | null; phrase: string }
   /** Something worth telling, with nothing to press, or null. */
   advice: Advice | null
+  /**
+   * The one-line suggestion made after the last reply, or null. In the card it takes the place of the cat's phrase; in
+   * the plain row it is a row of its own. A suggestion's card hides it, and the next prompt clears it.
+   */
+  nudge: string | null
+  /**
+   * Tokens the output digest kept out of the conversation today, over every session on this machine (the pane's
+   * "今日の節約"); the band says so only once it is more than none.
+   */
+  savedTokens: number
+  /**
+   * Tokens of reading that work handed to the plugin's skills and agents kept out of the conversation today: an estimate, said
+   * apart from `savedTokens` and never added to it. 0 for a person held back from the savings, and when nothing was handed over.
+   */
+  keptTokens: number
   /** A suggestion put in a card here, because no pane fits the terminal; null otherwise. */
   offer: Offer | null
   /** The mod is compacting at the person's request. */
@@ -48,6 +63,16 @@ export const CARD_MIN_COLUMNS = 56
 
 /** The card is its frame and the cat's four rows. */
 export const CARD_ROWS = CAT_ROWS + 2
+
+/** What the card takes beside its right column: the frame and padding (4), the cat (16) and the gap between (2). */
+const CARD_SIDE_CELLS = 4 + CAT_COLS + 2
+
+/**
+ * Rows the card gains over its four when it carries a suggestion: the suggestion may wrap in the right column, and
+ * advice, if there is any, keeps its row under it (without a suggestion, advice stands where the phrase does).
+ */
+export const cardExtraRows = (nudge: string | null, hasAdvice: boolean, columns: number): number =>
+  nudge === null ? 0 : wrappedRows(nudge, columns - CARD_SIDE_CELLS) + (hasAdvice ? 1 : 0) - 1
 /**
  * What a suggestion's own card takes above the band: its frame, a title, a reason and what accepting does (each
  * may wrap) and its buttons. Counted generously, since a band taller than its room scrolls and could push
@@ -61,8 +86,8 @@ const levelColor = (level: 'ok' | 'notice' | 'warn'): 'warning' | 'error' | unde
 /** Below this, what agents spent is not worth a word in the band (it is always in the pane). */
 const AGENT_CHIP_TOKENS = 1_000
 
-/** The figures of a turn and of the account, beside the context: dollars and limits only once they matter. */
-const figures = (ui: Ui, f: Facts) => {
+/** The figures of a turn and of the account, beside the context: savings, dollars and limits only once they matter. */
+const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
   const { Box, Text } = ui
   const showCost = f.rateLimits.length === 0 && f.costUsd !== null && f.costUsd >= 1
   const limits = f.rateLimits.filter(r => r.percentUsed >= THRESHOLDS.limitNotice)
@@ -78,6 +103,22 @@ const figures = (ui: Ui, f: Facts) => {
       <Box gap={1}>
         <Text dimColor>エージェント</Text>
         <Text>{formatTokens(f.agentTokensThisTurn)} tok</Text>
+      </Box>,
+    )
+  }
+  if (savedTokens > 0) {
+    rows.push(
+      <Box gap={1}>
+        <Text dimColor>節約</Text>
+        <Text color="success">{`約 ${formatTokens(savedTokens)} tok`}</Text>
+      </Box>,
+    )
+  }
+  if (keptTokens > 0) {
+    rows.push(
+      <Box gap={1}>
+        <Text dimColor>委任（推定）</Text>
+        <Text color="success">{`約 ${formatTokens(keptTokens)} tok`}</Text>
       </Box>,
     )
   }
@@ -100,7 +141,7 @@ const figures = (ui: Ui, f: Facts) => {
   return rows
 }
 
-type PartProps = BandProps & { advice: Advice | null }
+type PartProps = BandProps & { advice: Advice | null; nudge: string | null }
 
 /** The framed card: the cat on the left, the gauge and the figures to its right. */
 const Card = (p: PartProps & { Raster: RasterElement }) => {
@@ -127,11 +168,10 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
           </Text>
         </Box>
         <Box gap={2} flexWrap="wrap">
-          {figures(p.ui, f)}
+          {figures(p.ui, f, p.savedTokens, p.keptTokens)}
         </Box>
-        {p.advice === null ? (
-          <Text dimColor>{p.cat.phrase}</Text>
-        ) : (
+        {p.nudge !== null && <Text color="claude">{p.nudge}</Text>}
+        {p.advice !== null && (
           <Box gap={2} flexWrap="wrap">
             <Text bold color={p.advice.level === 'warn' ? 'error' : 'warning'}>
               {p.advice.title}
@@ -139,6 +179,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
             <Button key="later" label="あとで" dimColor onPress={() => p.onLaterAdvice(p.advice?.id ?? '')} />
           </Box>
         )}
+        {p.nudge === null && p.advice === null && <Text dimColor>{p.cat.phrase}</Text>}
         <Box gap={2} flexWrap="wrap">
           <Button key="details" label="詳しく" onPress={p.onDetails} />
           {p.tag !== null && <Text dimColor>{p.tag}</Text>}
@@ -170,10 +211,15 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
             {bar(percent, isNarrow ? 6 : 10)} {percent}%
           </Text>
         </Box>
-        {figures(p.ui, f)}
+        {figures(p.ui, f, p.savedTokens, p.keptTokens)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}
         <Button key="details" label="詳しく" onPress={p.onDetails} />
       </Box>
+      {p.nudge !== null && (
+        <Box marginLeft={isNarrow ? 0 : FACE_CELLS + 2}>
+          <Text color="claude">{p.nudge}</Text>
+        </Box>
+      )}
       {p.advice !== null && (
         <Box gap={2} flexWrap="wrap" marginLeft={isNarrow ? 0 : FACE_CELLS + 2}>
           <Text color={p.advice.level === 'warn' ? 'error' : 'warning'}>{p.advice.title}</Text>
@@ -193,12 +239,17 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
 export const Band = (p: BandProps) => {
   const card = p.isWorking ? null : p.offer
   const advice = card === null ? p.advice : null
+  // A suggestion's card is asked about first, and nothing is put to the person while a turn runs: the one-line
+  // suggestion waits (the caller keeps it) until the card is closed and the turn is over.
+  const nudge = card === null && !p.isWorking ? (p.nudge ?? null) : null
   const mood = moodOf(p.facts, card ?? advice, p.isCompacting)
-  const part = { ...p, advice }
+  const part = { ...p, advice, nudge }
   const { Box } = p.ui
   // The card of the cat is tall: where it, and a suggestion above it, would not fit the room, the plain row goes under the suggestion.
+  // A one-line suggestion that wraps makes the card taller still, and then the plain row is the safer fit.
   const room = p.maxRows - (card !== null ? OFFER_CARD_ROWS : 0)
-  const hasRoomForCard = p.Raster !== null && p.columns >= CARD_MIN_COLUMNS && room >= CARD_ROWS
+  const hasRoomForCard =
+    p.Raster !== null && p.columns >= CARD_MIN_COLUMNS && room >= CARD_ROWS + cardExtraRows(nudge, advice !== null, p.columns)
 
   return (
     <Box flexDirection="column">

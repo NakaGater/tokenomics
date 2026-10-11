@@ -2,7 +2,7 @@ import { fnv1a } from './hash'
 import type { CoreOptions, Mode } from './options'
 
 export type Tier = 'A' | 'B' | 'C'
-export type MeasureId = 'A1' | 'B1' | 'B2' | 'B3' | 'C1' | 'C2' | 'C3'
+export type MeasureId = 'A1' | 'B1' | 'B2' | 'B3' | 'B6' | 'C1' | 'C2' | 'C3'
 /** `control` is the share of people left alone so the rest can be compared with them: it only ever observes. */
 export type Arm = 'treat' | 'control'
 
@@ -10,7 +10,7 @@ type Measure = {
   tier: Tier
   label: string
   /** The setting that owns it. */
-  option: 'digest' | 'delegation' | 'nudges'
+  option: 'digest' | 'delegation' | 'steer' | 'nudges'
   /** The modes this build has for it. Any other falls back to `observe`; `off` is always honoured. */
   modes: readonly Mode[]
 }
@@ -22,6 +22,8 @@ export const MEASURES: Record<MeasureId, Measure> = {
   B2: { tier: 'B', label: 'サブエージェントの effort', option: 'delegation', modes: ['off', 'observe', 'auto'] },
   // Replacing Explore with the light scout is watched only, for now.
   B3: { tier: 'B', label: 'Explore の置き換え', option: 'delegation', modes: ['off', 'observe'] },
+  // The main conversation's own search or whole test run is turned back once, with the light skill named. The only measure that refuses a call.
+  B6: { tier: 'B', label: '調査・テストをスキルへ', option: 'steer', modes: ['off', 'observe', 'auto'] },
   C1: { tier: 'C', label: '話題転換 → /clear', option: 'nudges', modes: ['off', 'observe', 'suggest'] },
   C2: { tier: 'C', label: '文脈肥大 → /compact', option: 'nudges', modes: ['off', 'observe', 'suggest'] },
   C3: { tier: 'C', label: 'キャッシュ切れ', option: 'nudges', modes: ['off', 'observe', 'suggest'] },

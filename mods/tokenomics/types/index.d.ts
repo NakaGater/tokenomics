@@ -81,8 +81,25 @@ export type Modes = {
   handoffs: number
 }
 
-/** What today's ledger says the mod has done for the person, for the pane: digests made, tokens kept out, dollars (thousandths), suggestions it would have made. */
-export type Savings = { digests: number; tokens: number; milliUsd: number; wouldFire: number }
+/**
+ * What today's ledger says the mod has done for the person, for the pane. Two kinds of figure, never added together:
+ * the digest's (`digests`, `tokens`, `milliUsd`: outputs that were cut; `recovered` of them the model went back for), and the
+ * estimate for work handed to the plugin's skills and agents (`forks` runs kept `keptTokens` of reading out of the conversation,
+ * `milliUsd` thousandths of a dollar; of the `forkReaders` that read files, `forkRereads` files were read again by the conversation).
+ * `wouldFire` counts the suggestions it would have made.
+ */
+export type Savings = {
+  digests: number
+  tokens: number
+  milliUsd: number
+  wouldFire: number
+  recovered: number
+  forks: number
+  keptTokens: number
+  keptMilliUsd: number
+  forkReaders: number
+  forkRereads: number
+}
 
 /** The /config Model row: what it holds now and the values it takes. */
 export type ModelRow = { value: string; options: string[] }
@@ -116,6 +133,8 @@ declare module 'claude-code' {
       muted: OfferKind[]
       /** What the savings layer has done today, from its ledger. */
       savings: Savings
+      /** The one-line suggestion made after the last reply, shown in the cat's card until the next prompt; null when none. */
+      nudge: string | null
     }
   }
 }

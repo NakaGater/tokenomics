@@ -34,11 +34,14 @@ import {
 import { DEFAULT_OPTIONS, cacheTtlMs, parseOptions } from '../hooks/lib/core/options'
 import { savingsRows } from '../hooks/lib/status'
 import { BREAKER_LIMIT, MEASURES, MEASURE_IDS, armOf, failed, isTripped, modeOf, succeeded } from '../hooks/lib/core/policy'
+import type { Savings } from '../types'
 
 const DAY = 86_400_000
 /** A figure to a few decimals: the kit has no "close to", and a price is a float. */
 const round = (x: number | null, digits: number): number | null => (x === null ? null : Number(x.toFixed(digits)))
 const NOW = Date.UTC(2026, 9, 10, 12, 0, 0)
+/** A day with nothing saved. */
+const NOTHING: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 }
 
 describe('options', () => {
   test('a manifest with nothing set gives the defaults', () => {
@@ -47,8 +50,8 @@ describe('options', () => {
   })
 
   test('values that fit are taken, and numbers are held to their range', () => {
-    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', nudges: 'off', holdoutPercent: 250, cacheTtlMinutes: 500 })
-    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', nudges: 'off', holdoutPercent: 100, cacheTtlMinutes: 120 })
+    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', holdoutPercent: 250, cacheTtlMinutes: 500 })
+    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', holdoutPercent: 100, cacheTtlMinutes: 120 })
     expect(parseOptions({ cacheTtlMinutes: -3 }).cacheTtlMinutes).toBe(0)
   })
 
@@ -137,8 +140,8 @@ describe('policy', () => {
   const treat = (over: Partial<typeof DEFAULT_OPTIONS> = {}) => ({ ...DEFAULT_OPTIONS, ...over })
 
   test('every measure has a row, owned by one of the settings', () => {
-    expect(MEASURE_IDS).toEqual(['A1', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3'])
-    for (const id of MEASURE_IDS) expect(['digest', 'delegation', 'nudges']).toContain(MEASURES[id].option)
+    expect(MEASURE_IDS).toEqual(['A1', 'B1', 'B2', 'B3', 'B6', 'C1', 'C2', 'C3'])
+    for (const id of MEASURE_IDS) expect(['digest', 'delegation', 'steer', 'nudges']).toContain(MEASURES[id].option)
   })
 
   test('the defaults: the digest acts, the subagent and suggestion measures watch', () => {
@@ -146,6 +149,7 @@ describe('policy', () => {
     expect(modeOf('A1', o, 'treat')).toBe('auto')
     expect(modeOf('B1', o, 'treat')).toBe('observe')
     expect(modeOf('B2', o, 'treat')).toBe('observe')
+    expect(modeOf('B6', o, 'treat')).toBe('observe')
     expect(modeOf('C1', o, 'treat')).toBe('observe')
   })
 
@@ -155,6 +159,10 @@ describe('policy', () => {
     // Replacing Explore is only watched in this build, whatever the setting says.
     expect(modeOf('B3', treat({ delegation: 'auto' }), 'treat')).toBe('observe')
     expect(modeOf('A1', treat({ digest: 'observe' }), 'treat')).toBe('observe')
+    // Turning calls back has its own setting: the delegation one does not reach it.
+    expect(modeOf('B6', treat({ delegation: 'auto' }), 'treat')).toBe('observe')
+    expect(modeOf('B6', treat({ steer: 'auto' }), 'treat')).toBe('auto')
+    expect(modeOf('B1', treat({ steer: 'auto' }), 'treat')).toBe('observe')
   })
 
   test('the digest, where there is no place of the person’s own to keep its copies, only watches', () => {
@@ -172,6 +180,7 @@ describe('policy', () => {
   test('the held-back arm never does more than watch', () => {
     expect(modeOf('A1', treat(), 'control')).toBe('observe')
     expect(modeOf('B1', treat({ delegation: 'auto' }), 'control')).toBe('observe')
+    expect(modeOf('B6', treat({ steer: 'auto' }), 'control')).toBe('observe')
   })
 
   test('the arm is the same for the same person, and the share held back is about what was asked', () => {
@@ -297,23 +306,71 @@ describe('ledger', () => {
     l = append(l, fired, NOW + 1, 's')
     l = append(l, { kind: 'would', measure: 'C2', mode: 'observe', arm: 'treat', tag: 'notice' }, NOW + 2, 's')
     l = append(l, fired, NOW - 2 * DAY, 's')
-    expect(savingsToday(l, NOW + 3)).toEqual({ digests: 2, tokens: 10_200, milliUsd: 144, wouldFire: 1 })
+    expect(savingsToday(l, NOW + 3)).toEqual({ ...NOTHING, digests: 2, tokens: 10_200, milliUsd: 144, wouldFire: 1 })
     expect(sumCounts(l, NOW + 3, 7, k => k.startsWith('A1:fired:'))).toBe(3)
+  })
+
+  test('what work handed to the plugin’s skills and agents kept out is summed apart from the digest’s, for its own kinds only', () => {
+    const kept = (tag: string): LedgerEvent => ({ kind: 'signal', measure: 'B1', mode: 'observe', arm: 'treat', tag, n: { keptTokens: 9_800, readTokens: 10_000, reportTokens: 200, keptMilliUsd: 300 } })
+    const note = (kind: 'signal' | 'outcome', tag: string): LedgerEvent => ({ kind, measure: 'B1', mode: 'observe', arm: 'treat', tag })
+    let l: Ledger = emptyLedger
+    l = append(l, fired, NOW, 's')
+    l = append(l, kept('kept_scout'), NOW + 1, 's')
+    l = append(l, kept('kept_test-summary'), NOW + 2, 's')
+    l = append(l, kept('kept_scout'), NOW - 2 * DAY, 's')
+    l = append(l, note('signal', 'readers_fork_scout'), NOW + 3, 's')
+    l = append(l, note('signal', 'readers_tokenomics:scout'), NOW + 3, 's')
+    l = append(l, note('signal', 'readers_Explore'), NOW + 3, 's')
+    l = append(l, note('signal', 'readers_custom'), NOW + 3, 's')
+    l = append(l, note('outcome', 'reread_fork_scout'), NOW + 4, 's')
+    l = append(l, note('outcome', 'reread_Explore'), NOW + 4, 's')
+    l = append(l, { kind: 'outcome', measure: 'A1', mode: 'auto', arm: 'treat', tag: 'readback' }, NOW + 4, 's')
+    expect(savingsToday(l, NOW + 5)).toEqual({
+      ...NOTHING,
+      digests: 1,
+      tokens: 5_100,
+      milliUsd: 72,
+      recovered: 1,
+      forks: 2,
+      keptTokens: 19_600,
+      keptMilliUsd: 600,
+      forkReaders: 2,
+      forkRereads: 1,
+    })
   })
 })
 
 describe('savings rows', () => {
-  const day = { digests: 3, tokens: 21_000, milliUsd: 115, wouldFire: 2 }
+  const day = { ...NOTHING, digests: 3, tokens: 21_000, milliUsd: 115, wouldFire: 2 }
+  const handed = { ...NOTHING, forks: 2, keptTokens: 19_600, keptMilliUsd: 600 }
 
   test('nothing has been done: nothing to show', () => {
-    expect(savingsRows({ digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0 }, false)).toEqual([])
+    expect(savingsRows(NOTHING, false)).toEqual([])
   })
 
-  test('what was kept out is told in tokens and, off a subscription, in dollars; what was only noted is told apart', () => {
+  test('what was cut is told in tokens and, off a subscription, in dollars; what was only noted is told apart', () => {
     const api = savingsRows(day, false)
-    expect(api[0]!.label).toBe('今日の節約')
+    expect(api[0]!.label).toBe('今日の節約（確定）')
     expect(api[0]!.value).toBe('大きな出力を 3 回縮め、約 21k tok を会話に入れずに済みました（見込み約 $0.12）')
     expect(api[1]!.value).toContain('2 回')
     expect(savingsRows(day, true)[0]!.value).toBe('大きな出力を 3 回縮め、約 21k tok を会話に入れずに済みました')
+  })
+
+  test('the outputs the model went back for are told beside the cut ones', () => {
+    expect(savingsRows({ ...day, recovered: 1 }, true)[0]!.value).toBe('大きな出力を 3 回縮め、約 21k tok を会話に入れずに済みました。あとで全文を取りに戻ったのは 1 回')
+  })
+
+  test('the estimate for work handed to a skill or agent is a row of its own, called an estimate, and never added to the cut figure', () => {
+    const rows = savingsRows({ ...handed, digests: 3, tokens: 21_000, milliUsd: 115, wouldFire: 2 }, false)
+    expect(rows.map(r => r.label)).toEqual(['今日の節約（確定）', '今日の節約（推定）', '記録のみ'])
+    expect(rows[0]!.value).toContain('約 21k tok')
+    expect(rows[1]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）、見込み約 $0.60')
+    expect(rows.some(r => r.value.includes('41k'))).toBe(false)
+    expect(savingsRows(handed, true)[0]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）')
+  })
+
+  test('with it, how often the conversation had to read the same files again', () => {
+    const [row] = savingsRows({ ...handed, forkReaders: 2, forkRereads: 1 }, true)
+    expect(row!.value).toContain('ファイルを読んだ 2 回のあと、会話側が同じファイルを読み直したのは 1 件')
   })
 })

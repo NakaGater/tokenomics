@@ -1,8 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
+import { DEMO_SHORT } from '../hooks/lib/core/nudges'
 import { FACE } from '../hooks/lib/mascot'
 
-import { SURFACES, bandProps, engine, frameColor, measure } from './kit'
+import { SURFACES, bandProps, engine, frameColor, measure, nudgeIn, phraseIn } from './kit'
 
 const USAGE = { input_tokens: 900, output_tokens: 300, cache_creation_input_tokens: 2000, cache_read_input_tokens: 2_100_000, model: 'm' }
 
@@ -185,6 +186,102 @@ test('a compaction that is refused leaves the band as it was, says so, and does 
   // Once in this spell, as promised.
   await $.session.measure(measure.context(82))
   expect(await ui.find({ key: 'offer-accept' })).toBeUndefined()
+})
+
+// ── The one-line suggestion in the card ─────────────────────────────────────────────────────────────────
+
+const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
+
+/** `/tokenomics nudge-test`, then a reply: the test line is put in the band, wherever the setting stands. */
+const showNudge = async ($: { command: { run: (e: never) => Promise<unknown> }; turn: { complete: (e: never) => Promise<unknown> } }) => {
+  await $.command.run({ command: 'tokenomics', args: 'nudge-test', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never)
+  await finishTurn($)
+}
+
+test('a one-line suggestion takes the place of the cat’s phrase in the card, and the cat, gauge and buttons stay', async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  expect(await phraseIn(ui)).toBeDefined()
+  expect(await nudgeIn(ui)).toBeUndefined()
+
+  await showNudge($ as never)
+
+  expect(await nudgeIn(ui)).toBe(DEMO_SHORT)
+  expect(await phraseIn(ui)).toBeUndefined()
+  expect(await ui.find({ type: 'Raster', key: 'cat' })).toBeDefined()
+  expect(await ui.find({ type: 'Raster', key: 'gauge' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'details' })).toBeDefined()
+})
+
+test('where the band is one plain row, the suggestion is a row of its own under it', async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+  const desktop = await $.ui.mount({ ...bandProps(), surface: 'desktop' })
+  const narrow = await $.ui.mount({ ...bandProps({ bodyColumns: 50 }), surface: 'terminal' })
+
+  await showNudge($ as never)
+
+  for (const ui of [desktop, narrow]) {
+    expect(await nudgeIn(ui)).toBe(DEMO_SHORT)
+    expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'details' })).toBeDefined()
+  }
+})
+
+test('advice keeps its row beside the suggestion, and the phrase has neither of them to give way to', async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await $.session.measure({ ...measure.context(20), rateLimits: [{ kind: 'five_hour', percentUsed: 82 }], changed: ['rateLimits'] })
+  expect(await phraseIn(ui)).toBeUndefined()
+
+  await showNudge($ as never)
+
+  expect(await nudgeIn(ui)).toBe(DEMO_SHORT)
+  expect(await ui.find({ type: 'Text', text: '5時間の上限の82%を使いました' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'later' })).toBeDefined()
+  expect(await phraseIn(ui)).toBeUndefined()
+})
+
+test('a suggestion’s card is asked about first: the one-line suggestion is hidden under it and is back once it is closed', async ($, on) => {
+  engine(on, { isPlaced: false })
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await $.session.measure(measure.context(92))
+  expect(await ui.find({ key: 'offer-accept' })).toBeDefined()
+
+  await showNudge($ as never)
+  expect(await nudgeIn(ui)).toBeUndefined()
+  expect(await ui.find({ key: 'offer-accept' })).toBeDefined()
+
+  await ui.press({ key: 'offer-later' })
+  expect(await ui.find({ key: 'offer-accept' })).toBeUndefined()
+  expect(await nudgeIn(ui)).toBe(DEMO_SHORT)
+})
+
+test('a suggestion that wraps makes the card taller; where the room is short of that, the band is the plain row, and the suggestion is still there', async ($, on) => {
+  engine(on)
+  await $.session.start(START)
+  await showNudge($ as never)
+
+  // DEMO_SHORT is 78 cells: three rows in the 34 the card leaves at 56 columns, two at 100, one at 120. The card is six rows with one.
+  const places = [
+    { bodyColumns: 56, rows: 8 },
+    { bodyColumns: 100, rows: 7 },
+    { bodyColumns: 120, rows: 6 },
+  ]
+  for (const place of places) {
+    const fits = await $.ui.mount({ ...bandProps({ bodyColumns: place.bodyColumns, maxRows: place.rows }), surface: 'terminal' })
+    expect(await fits.find({ type: 'Raster', key: 'cat' })).toBeDefined()
+    expect(await nudgeIn(fits)).toBe(DEMO_SHORT)
+    await fits.unmount()
+
+    const short = await $.ui.mount({ ...bandProps({ bodyColumns: place.bodyColumns, maxRows: place.rows - 1 }), surface: 'terminal' })
+    expect(await short.find({ type: 'Raster' })).toBeUndefined()
+    expect(await nudgeIn(short)).toBe(DEMO_SHORT)
+    await short.unmount()
+  }
 })
 
 test('dollars appear on API billing once they matter; on a subscription the limits do instead', async ($, on) => {
