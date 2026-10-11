@@ -55,10 +55,13 @@ export type SavingKey = 'effort' | 'worker' | 'handoff' | 'model'
 /** One accepted saving that is still in effect, with the words for the button that ends it. */
 export type ActiveSaving = { key: SavingKey; label: string; stop: string }
 
-/** What the person has accepted and is still running, for the pane: nothing to choose from, only to end. */
-export const activeSavings = (m: Modes): ActiveSaving[] => [
+/**
+ * What the person has accepted and is still running, for the pane: nothing to choose from, only to end.
+ * `isNoteBaseline`: the note before a compaction is on without being asked, so it is not something to end here.
+ */
+export const activeSavings = (m: Modes, isNoteBaseline = false): ActiveSaving[] => [
   ...(m.effort === null ? [] : [{ key: 'effort' as const, label: `考える深さ: ${EFFORT_LABEL[m.effort]}に制限中`, stop: 'やめる' }]),
   ...(m.isWorkerOn ? [{ key: 'worker' as const, label: '軽量エージェント: 使える状態', stop: 'やめる' }] : []),
-  ...(m.isHandoffOn ? [{ key: 'handoff' as const, label: '要約の前にメモを残す', stop: 'やめる' }] : []),
+  ...(m.isHandoffOn && !isNoteBaseline ? [{ key: 'handoff' as const, label: '要約の前にメモを残す', stop: 'やめる' }] : []),
   ...(m.previousModel === null ? [] : [{ key: 'model' as const, label: `モデルを切り替え中（元: ${m.previousModel}）`, stop: '元に戻す' }]),
 ]

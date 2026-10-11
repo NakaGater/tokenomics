@@ -303,6 +303,10 @@ describe('nudges', () => {
     expect(nudgeLine(c(), false)).toBe('会話が重くなってきました（返信のたびに約 120k tok を読み直します）。区切りのよいところで /compact を。')
     expect(nudgeLine(c({ tag: 'strong' }), false)).toContain('/clear')
     expect(nudgeLine(c({ measure: 'C1', tag: 'keyword' }), false)).toContain('今の回答も消える')
+    // Where /clear writes its own note, the person is not asked to ask for one first.
+    const noted = nudgeLine(c({ measure: 'C1', tag: 'keyword' }), false, null, true)
+    expect(noted).toContain('要点は /clear のときに自動でメモに残ります')
+    expect(noted).not.toContain('/tokenomics handoff')
     const cold = c({ measure: 'C3', tag: '50to100k', ctx: 80_000 })
     expect(nudgeLine(cold, false, 400)).toBe('しばらく空いたため、会話全体（約 80k tok）を読み直しました（約 $0.40）。続きが別件なら、/clear が一番軽くなります。')
     expect(nudgeLine(cold, true, 400)).not.toContain('$')

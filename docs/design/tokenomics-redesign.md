@@ -698,6 +698,7 @@ mods/tokenomics/
 | T10 `/tokenomics` | 一部 | ペインとテキスト報告に「今日の節約」、`good` / `bad`。`doctor` とセッション内の施策オーバーライドは未（Phase 3） |
 | T11 ベンチマーク | 骨組みのみ | `scripts/bench.sh`・見本 3 タスク・モデルを呼ばない差し替え。本番のタスクはユーザーの提供待ち。実行費用は使っていない |
 | T12 README・check-all | 済 | README、`bench/README.md`、`scripts/check-all.sh`（ベンチの道具の確認を含む） |
+| T15 `/clear` と要約のメモ | 済（実機未確認） | `session.end`（`reason: clear`）で会話を読んでメモを書き（`hooks/lib/handoff.ts` の `buildHandoff(…, 'clear')`）、次の会話の `classic.SessionStart`（`source: clear`）で、場所の一行だけを `additionalContext` に渡す。git の状態は `session.end` の時間制限（約 1.5 秒）を避けて、その開始側で書き足す。設定 `handoffNote`（既定オン）。何もしない人には出さない。台帳 `S:clear_note_*`・`clear_pointer_given`・`clear_start_without_note`。`-p` では `/clear` で `session.end` が呼ばれず、`$.session.messages` も使えない（探りで確認）。対話セッションで直前の会話が読めるかは未確認で、台帳の件数が答えになる。要約の前のメモも `handoffNote`（既定オン、何もしない人を除く）で既定オンにし、要約のあとに始まる会話にも `classic.SessionStart`（`source: compact`）で場所を一行渡す（`compact_note_written`・`compact_pointer_given`・`compact_start_without_note`）。メモの中身も作り直した（見るだけのコマンドを除く、最初の依頼、前の要約の先頭、git の状態、最後の回答を前へ）。 |
 | T14 節約の見せ方（確定／推定） | 済 | `forks.ts`（純粋な決算）、`register.tsx` の `svSettle`・`svSweep`・`svForkStarted`、台帳の `savingsToday`（10 項目）、ペイン・帯・テキスト報告、`ledger-report.sh` の三つの節。サブエージェントの縮めは確定に入れない。実機の見え方（帯の折り返し）は未確認 |
 | T13 スキルへの誘導（B6） | 済 | `hooks/lib/core/steer.ts`（純粋な判定）、`register.tsx` の `svSteer`、設定 `steer`（既定 observe）。単体と engine のテスト 26 件。台帳は `B6:fired|would|outcome|signal`。止めて通す動作と、サブエージェントに触れないことは実機で確認。効果は未測定 |
 

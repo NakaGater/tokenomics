@@ -18,7 +18,7 @@ import {
   pruneDismissed,
 } from '../hooks/lib/facts'
 import { bar, clockLabel, estimateTokens, formatTokens, turnTokens } from '../hooks/lib/format'
-import { buildHandoff, handoffDir, handoffPath, withPointer } from '../hooks/lib/handoff'
+import { buildHandoff, clearPointer, formatGit, handoffDir, handoffPath, hasWork, withGit, withPointer } from '../hooks/lib/handoff'
 import { heavyFrom } from '../hooks/lib/heavy'
 import { FACE, FACE_CELLS, moodOf } from '../hooks/lib/mascot'
 import { activeSavings, cappedEffort, fitsWindow, initialModes, lighterModels, tagOf } from '../hooks/lib/modes'
@@ -670,6 +670,8 @@ describe('what was accepted', () => {
     expect(activeSavings(initialModes)).toEqual([])
     const all = activeSavings({ ...initialModes, effort: 'low', isWorkerOn: true, isHandoffOn: true, previousModel: 'opus' })
     expect(all.map(a => a.key)).toEqual(['effort', 'worker', 'handoff', 'model'])
+    // Where the note is on by default it is not an accepted saving to end.
+    expect(activeSavings({ ...initialModes, isHandoffOn: true }, true)).toEqual([])
     expect(all.find(a => a.key === 'model')?.stop).toBe('元に戻す')
     expect(all.find(a => a.key === 'effort')?.label).toContain('低め')
   })
@@ -686,5 +688,133 @@ describe('boundary commands', () => {
     for (const command of ['git status', 'git log --grep commit', 'git push', 'ls commit', 'gh pr view 12', undefined, 42]) {
       expect(isBoundaryCommand(command)).toBe(false)
     }
+  })
+})
+
+describe('a note that is worth reading after a /clear', () => {
+  const call = (tool: string, input: Record<string, unknown>, id: string, isError?: true) => ({ tool_use_id: id, tool, input, ...(isError === undefined ? {} : { isError }) })
+  const user = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+  const assistant = (text: string, toolUses: SessionMessage['toolUses'] = []): SessionMessage => ({ role: 'assistant', text, toolUses })
+  const bash = (command: string, id: string, isError?: true) => assistant('', [call('Bash', { command }, id, isError)])
+  const part = (note: string, title: string): string => note.split(`## ${title}`)[1]?.split('\n## ')[0] ?? ''
+
+  test('it says what it was written for', () => {
+    expect(buildHandoff([user('a')], 'now', 'clear')).toContain('# Work notes saved before /clear')
+    expect(buildHandoff([user('a')], 'now', 'fresh')).toContain('# Work notes saved before a fresh start')
+    expect(buildHandoff([user('a')], 'now')).toContain('# Work notes saved before compaction')
+  })
+
+  test('commands that only look are left out; what ran, and what failed, is kept', () => {
+    const note = buildHandoff(
+      [
+        user('Fix it'),
+        bash('cd ../.. && grep -rn "x" src | head -20', 'a'),
+        bash("sed -n 60,108p hooks/ui/band.tsx; sed -n 1,5p README.md", 'b'),
+        bash('ls -la && cat package.json', 'c'),
+        bash('git status --short && git log --oneline -3', 'd'),
+        bash('grep -c x file 2>&1 | head -1', 'e'),
+        bash('bun test', 'f', true),
+        bash("sed -i '' 's/a/b/' src/a.ts", 'g'),
+        bash('git commit -m "Fix it"', 'h'),
+        bash("python3 - <<'EOF'\nopen('x','w').write('1')\nEOF", 'i'),
+        bash('echo hi > out.txt', 'j'),
+        bash('cd repo\nrm -rf build', 'k'),
+        assistant('Done.'),
+      ],
+      'now',
+    )
+    const commands = part(note, 'Commands run, reads and searches left out (latest 20)')
+    for (const looked of ['grep -rn', 'sed -n', 'ls -la', 'git status', 'git log', 'grep -c']) expect(commands).not.toContain(looked)
+    expect(commands).toContain('- bun test (failed)')
+    expect(commands).toContain("- sed -i '' 's/a/b/' src/a.ts")
+    expect(commands).toContain('- git commit -m "Fix it"')
+    expect(commands).toContain("- python3 - <<'EOF'")
+    expect(commands).toContain('- echo hi > out.txt')
+    // The line that did something, not the `cd` before it.
+    expect(commands).toContain('- rm -rf build')
+    expect(commands).not.toContain('- cd repo')
+  })
+
+  test('the same command run again and again is listed once in a row', () => {
+    const note = buildHandoff([user('x'), bash('bun test', 'a'), bash('bun test', 'b'), bash('bun build', 'c'), bash('bun test', 'd')], 'now')
+    expect(part(note, 'Commands run, reads and searches left out (latest 20)').match(/^- bun /gm)?.length).toBe(3)
+  })
+
+  test('with many requests the first one is kept apart, because it says what the work is', () => {
+    const many = [user('Build the savings display'), ...Array.from({ length: 12 }, (_, i) => user(`follow-up ${i}`))]
+    const note = buildHandoff(many, 'now')
+    expect(part(note, 'First request')).toContain('Build the savings display')
+    expect(part(note, 'Recent requests (oldest first)')).not.toContain('Build the savings display')
+    expect(part(note, 'Recent requests (oldest first)')).toContain('follow-up 11')
+    // With few requests there is nothing to keep apart.
+    expect(buildHandoff(many.slice(0, 4), 'now')).not.toContain('## First request')
+  })
+
+  test('a summary carried over from an earlier compaction gives its head, without the lead-in sentence', () => {
+    const carried = `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion.\n\nSummary:\n1. Primary Request and Intent:\n   - Make savings visible to users\n2. Key Technical Concepts: ${'y'.repeat(3000)}`
+    const note = buildHandoff([user(carried), assistant('Continuing.')], 'now', 'clear')
+    const head = part(note, 'Carried-over summary of the earlier conversation (its head)')
+    expect(head).toContain('Primary Request and Intent')
+    expect(head).toContain('Make savings visible to users')
+    expect(head).not.toContain('ran out of context')
+    expect(head.length).toBeLessThan(1_700)
+    // It is the earlier conversation's, not a request of the person's.
+    expect(note).not.toContain('## Recent requests')
+  })
+
+  test('the last answer comes before the lists, so a note over the limit loses the lists first', () => {
+    const reads = Array.from({ length: 40 }, (_, i) => call('Read', { file_path: `/repo/${'d'.repeat(300)}/f${i}.ts` }, `r${i}`))
+    const note = buildHandoff([user('Go'), assistant('', reads), assistant(`Next step: ship it. ${'z'.repeat(2400)}`)], 'now')
+    expect(note.length).toBeLessThanOrEqual(12_000)
+    expect(note).toContain('Next step: ship it.')
+    expect(note.indexOf('## Last answer')).toBeLessThan(note.indexOf('## Files read'))
+  })
+
+  test('a conversation has work to note when the person asked and was answered', () => {
+    expect(hasWork([])).toBe(false)
+    expect(hasWork([user('hi')])).toBe(false)
+    expect(hasWork([assistant('hello')])).toBe(false)
+    expect(hasWork([user('<local-command-stdout>x</local-command-stdout>'), assistant('hello')])).toBe(false)
+    expect(hasWork([user('Fix the login redirect'), assistant('Looking.')])).toBe(true)
+    // A long task after an auto-compaction: the only user turn is the carried-over summary, and it is the work.
+    expect(hasWork([user('This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. Goal'), assistant('Continuing.')])).toBe(true)
+    expect(hasWork([user('This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. Goal')])).toBe(false)
+  })
+
+  test('find looks unless it is told to delete, run something or write; the rest of a line that does something is kept', () => {
+    const note = buildHandoff(
+      [user('x'), bash('find . -name "*.ts" -type f', 'a'), bash('find build -name "*.o" -delete', 'b'), bash("find . -name x -exec rm {} \\;", 'c'), assistant('ok')],
+      'now',
+    )
+    const commands = part(note, 'Commands run, reads and searches left out (latest 20)')
+    expect(commands).not.toContain('-type f')
+    expect(commands).toContain('-delete')
+    expect(commands).toContain('-exec rm')
+  })
+
+  test('the git state is read as the branch and what changed, and put ahead of the lists', () => {
+    const lines = formatGit('## main...origin/main [ahead 2]\n M src/a.ts\n?? notes.md\n')
+    expect(lines).toEqual(['branch: main...origin/main [ahead 2]', ' M src/a.ts', '?? notes.md'])
+    const note = withGit(buildHandoff([user('Go'), assistant('Done.', [call('Edit', { file_path: '/repo/a.ts' }, 'e')])], 'now'), lines)
+    expect(note).toContain('## Git state when saved')
+    expect(note.indexOf('## Last answer')).toBeLessThan(note.indexOf('## Git state'))
+    expect(note.indexOf('## Git state')).toBeLessThan(note.indexOf('## Files edited or written'))
+    expect(note).toContain('branch: main...origin/main [ahead 2]')
+  })
+
+  test('a long change list is cut, a note with no lists takes the git state at its end, and no git state changes nothing', () => {
+    const many = formatGit(`## main\n${Array.from({ length: 80 }, (_, i) => ` M f${i}.ts`).join('\n')}`)
+    expect(many.length).toBe(41)
+    expect(many.at(-1)).toBe('… and 41 more')
+    const bare = buildHandoff([user('Go')], 'now')
+    expect(withGit(bare, ['branch: main']).trimEnd().endsWith('branch: main')).toBe(true)
+    expect(withGit(bare, [])).toBe(bare)
+  })
+
+  test('the line for the next conversation names the file and asks to read it only for the earlier work', () => {
+    const line = clearPointer('/t/claude-tokenomics/s/handoff-5.md')
+    expect(line).toContain('/t/claude-tokenomics/s/handoff-5.md')
+    expect(line).toContain('only if the person asks you to carry on')
+    expect(line.split('\n').length).toBe(1)
   })
 })

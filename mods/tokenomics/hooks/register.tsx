@@ -23,7 +23,7 @@ import {
   pruneDismissed,
 } from './lib/facts'
 import { estimateTokens, formatTokens, formatUsd, turnTokens } from './lib/format'
-import { buildHandoff, handoffDir, handoffPath, withPointer } from './lib/handoff'
+import { buildHandoff, clearPointer, compactPointer, formatGit, handoffDir, handoffPath, hasWork, withGit, withPointer } from './lib/handoff'
 import { heavyFrom } from './lib/heavy'
 import { say } from './lib/mascot'
 import { EFFORT_LABEL, MODEL_LABEL, type SavingKey, activeSavings, cappedEffort, fitsWindow, initialModes, tagOf } from './lib/modes'
@@ -39,7 +39,7 @@ import {
   standingOffers,
 } from './lib/offers'
 import { DEMO_MS, type CatState, type Demo, JUMP_STEPS, catView } from './lib/pace'
-import { DIGEST, digestOutput, digestPath, isDigestFile, isInsideDir, normalizeCommand } from './lib/core/digest'
+import { DIGEST, digestOutput, digestPath, isDigestFile, isInsideDir, isNoteFile, normalizeCommand } from './lib/core/digest'
 import { decideSpawn, typeTag } from './lib/core/downgrade'
 import { ASSUMED_TURNS_AFTER, coldTurnUsd, heavyLevel, keptOutUsd, milliUsd, modelFamily, warmTurnUsd } from './lib/core/economics'
 import { forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId } from './lib/core/forks'
@@ -299,11 +299,17 @@ const resetCat = (): void => {
   catPhrase = ''
 }
 
-const offerContext = async ($: Dollar) => ({
-  facts: await read($, facts),
-  modes: await read($, modes),
-  modelRow: await read($, modelRow),
-})
+/** Notes before a compaction are on without being asked (`handoffNote`), except for a person held back from the savings. */
+const isNoteByDefault = (): boolean => sv.options.handoffNote && sv.arm !== 'control'
+
+const offerContext = async ($: Dollar) => {
+  // Not `svEnsure`: this runs while drawing, where a refused first read would leave the init failed for the whole load.
+  // Before it has run the person counts as one who is not held back, which at worst words an offer for a moment.
+  const m = await read($, modes)
+
+  // What the offers say of the note is true of the note that is written, whether it was asked for or is on by default.
+  return { facts: await read($, facts), modes: { ...m, isHandoffOn: m.isHandoffOn || isNoteByDefault() }, modelRow: await read($, modelRow) }
+}
 
 /** The offer with this id, if the situation still calls for it. */
 const offerFor = async ($: Dollar, id: string): Promise<Offer | undefined> =>
@@ -407,29 +413,120 @@ const openPane = async ($: Dollar) => {
   return opened
 }
 
-/** The note a compaction may be preceded by: written to a file by rule, its place carried into the summary. */
+/**
+ * `git status --short --branch` of the working directory, as lines; none where it is not a repository, git cannot be run,
+ * or there is not the time (`leftMs`: what a hook with a limit has left, less a margin for the rest of its work).
+ */
+const gitState = async ($: Dollar, leftMs = Infinity): Promise<string[]> => {
+  const timeoutMs = Math.min(2_000, leftMs)
+  if (!(timeoutMs >= 300)) return []
+  try {
+    const ran = await $.process.run(['git', 'status', '--short', '--branch'], { timeoutMs })
+    return ran.exitCode === 0 ? formatGit(ran.stdout) : []
+  } catch {
+    return []
+  }
+}
+
+/** The note the latest compaction was preceded by, until the conversation that goes on has been told where it is. */
+let compactedNote: string | null = null
+
+/** The note a compaction is preceded by: written to a file by rule, its place carried into the summary. */
 const prepareHandoff = async (
   $: Dollar,
   trigger: string,
   instructions: string | undefined,
   messages?: readonly SessionMessage[],
+  leftMs = Infinity,
 ): Promise<string | undefined> => {
   const m = await read($, modes)
-  if (!m.isHandoffOn) return instructions
-  // The note holds the person's requests, files and commands: it is kept only in a temp folder that is theirs alone.
+  const isPre = trigger === 'precompute'
+  if (!isPre) compactedNote = null
   await svEnsure($)
+  if (!m.isHandoffOn && !isNoteByDefault()) return instructions
+  // The note holds the person's requests, files and commands: it is kept only in a temp folder that is theirs alone.
   if (!sv.canSave) return instructions
   try {
-    const isPre = trigger === 'precompute'
     const path = handoffPath(handoffDir(await $.env.get('TMPDIR'), await $.session.id()), isPre ? 'pre' : m.handoffs + 1)
     const stamp = new Date(await $.clock.now()).toISOString()
-    await $.fs.write(path, buildHandoff(messages ?? (await $.session.messages()), stamp))
-    if (!isPre) await update($, modes, x => ({ ...x, handoffs: x.handoffs + 1 }))
+    // Git gets only the time the hook can spare: a slow repo must not make the compaction's own hook overrun.
+    const text = withGit(buildHandoff(messages ?? (await $.session.messages()), stamp), await gitState($, leftMs - 300))
+    await $.fs.write(path, text)
+    if (!isPre) {
+      compactedNote = path
+      await update($, modes, x => ({ ...x, handoffs: x.handoffs + 1 }))
+      await svRecord($, 'S', 'observe', 'signal', 'compact_note_written', { chars: text.length }, true)
+    }
     return withPointer(instructions, path)
   } catch {
     // A note is a convenience: the compaction goes on without it.
     return instructions
   }
+}
+
+/** The note a `/clear` just left, until the conversation that follows has been told where it is. */
+let clearedNote: { path: string; text: string } | null = null
+
+/**
+ * `/clear`: what the conversation was doing is written down by rule, in the time `session.end` leaves.
+ * Only the transcript is read and one file written here; the git state is added when the next conversation starts.
+ * Each way it can come to nothing is a quiet signal in the ledger, so a use shows whether it works.
+ */
+const svClearNote = async ($: Dollar, remainingMs: number): Promise<void> => {
+  clearedNote = null
+  compactedNote = null
+  if (!sv.options.handoffNote) return
+  try {
+    await svEnsure($)
+    const skip = async (why: string): Promise<void> => svRecord($, 'S', 'observe', 'signal', `clear_note_${why}`, undefined, true)
+    if (sv.arm === 'control') return skip('skipped_control')
+    if (!sv.canSave) return skip('skipped_tmp')
+    if (remainingMs < 700) return skip('skipped_budget')
+    const messages = await $.session.messages()
+    if (messages.length === 0) return skip('skipped_unavailable')
+    if (!hasWork(messages)) return skip('skipped_empty')
+    const now = await $.clock.now()
+    const path = handoffPath(sv.saveDir, now)
+    const text = buildHandoff(messages, new Date(now).toISOString(), 'clear')
+    await $.fs.write(path, text)
+    clearedNote = { path, text }
+    await svRecord($, 'S', 'observe', 'signal', 'clear_note_written', { chars: text.length }, true)
+  } catch {
+    await svRecord($, 'S', 'observe', 'signal', 'clear_note_failed', undefined, true)
+  }
+}
+
+/** The conversation after a `/clear`, told in one line where the note of the one before is. Its git state is put into the note now. */
+const svClearPointer = async ($: Dollar, leftMs: number): Promise<string | undefined> => {
+  if (!sv.options.handoffNote) return undefined
+  const note = clearedNote
+  clearedNote = null
+  if (note === null) {
+    await svRecord($, 'S', 'observe', 'signal', 'clear_start_without_note', undefined, true)
+    return undefined
+  }
+  try {
+    // The line is the valuable part: git gets only the time the hook can spare, and never costs it.
+    const git = await gitState($, leftMs - 300)
+    if (git.length > 0) await $.fs.write(note.path, withGit(note.text, git))
+  } catch {
+    // The note stands without it.
+  }
+  await svRecord($, 'S', 'observe', 'signal', 'clear_pointer_given', undefined, true)
+  return clearPointer(note.path)
+}
+
+/** The conversation that goes on after a compaction, told in one line where the note made before it is. */
+const svCompactPointer = async ($: Dollar): Promise<string | undefined> => {
+  const path = compactedNote
+  compactedNote = null
+  if (path === null) {
+    // A note was to be expected here, and there is none (the compaction was not one this mod saw, or the note could not be made).
+    if (isNoteByDefault()) await svRecord($, 'S', 'observe', 'signal', 'compact_start_without_note', undefined, true)
+    return undefined
+  }
+  await svRecord($, 'S', 'observe', 'signal', 'compact_pointer_given', undefined, true)
+  return compactPointer(path)
 }
 
 /** `/tokenomics handoff`: the note of what a fresh start would lose, written now, with the words to carry it into the next conversation. */
@@ -439,7 +536,7 @@ const svHandoff = async ($: Dollar): Promise<string> => {
   try {
     const now = await $.clock.now()
     const path = handoffPath(sv.saveDir, now)
-    await $.fs.write(path, buildHandoff(await $.session.messages(), new Date(now).toISOString()))
+    await $.fs.write(path, withGit(buildHandoff(await $.session.messages(), new Date(now).toISOString(), 'fresh'), await gitState($)))
     return [`要点のメモを残しました: ${path}`, `/clear のあと、続きの会話の最初に「${path} を読んで、続きから進めて」と伝えてください。`].join('\n')
   } catch {
     return 'メモを残せませんでした。'
@@ -835,7 +932,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.4.0'
+const MOD_VERSION = '0.5.0'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1205,11 +1302,12 @@ const svNudge = ($: Dollar, usage: TurnUsage | undefined): Promise<NudgeText | u
       sv.shownAtTurn = sv.turnIndex
       sv.lastShown = { measure: c.measure, turn: sv.turnIndex }
       await svRecord($, c.measure, 'suggest', 'shown', c.tag, { ctx: c.ctx, stakeMilliUsd: c.stakeMilliUsd ?? 0 })
-      if (c.measure !== 'C3' || usage === undefined) return { long: nudgeLine(c, sv.isSubscription), short: nudgeShort(c, sv.isSubscription) }
+      const isNoted = sv.options.handoffNote && sv.canSave
+      if (c.measure !== 'C3' || usage === undefined) return { long: nudgeLine(c, sv.isSubscription, null, isNoted), short: nudgeShort(c, sv.isSubscription) }
       // This one speaks of the turn that has just ended: how big it was, and what the lapse cost.
       const cost = milliUsd(coldTurnUsd(prompt, usage.model))
       const ended = { ...c, ctx: prompt }
-      return { long: nudgeLine(ended, sv.isSubscription, cost), short: nudgeShort(ended, sv.isSubscription, cost) }
+      return { long: nudgeLine(ended, sv.isSubscription, cost, isNoted), short: nudgeShort(ended, sv.isSubscription, cost) }
     },
     undefined,
   )
@@ -1604,7 +1702,11 @@ export const register: Register = (on, options) => {
       await change($, f => applyResume(f, { tokens, usd: e.estimated_cache_write_usd ?? 0, idleMinutes }))
     }
 
-    return next(e)
+    const done = await next(e)
+    if (e.source !== 'clear' && e.source !== 'compact') return done
+    const pointer = e.source === 'clear' ? await svClearPointer($, next.budget.remainingMs) : await svCompactPointer($)
+
+    return pointer === undefined ? done : { ...done, additionalContext: [...(done.additionalContext ?? []), pointer] }
   }).catch(($, e, next) => next(e))
 
   // A change of folder usually means a different piece of work.
@@ -1618,8 +1720,10 @@ export const register: Register = (on, options) => {
   // A compaction the person typed, or the engine ran at its threshold: the window shrank, whoever asked.
   // (The band's own button is a plugin call, which does not pass through its own hooks; `compact` above covers it.)
   on('session.compact', async ($, e, next) => {
-    const noted = e.agentId === undefined ? await prepareHandoff($, e.trigger, e.instructions, e.messages) : e.instructions
+    const noted = e.agentId === undefined ? await prepareHandoff($, e.trigger, e.instructions, e.messages, next.budget.remainingMs) : e.instructions
     const done = await next(noted === e.instructions ? e : { ...e, instructions: noted })
+    // Nothing was installed, so nothing is to be pointed to.
+    if (done.skip !== undefined && e.trigger !== 'precompute') compactedNote = null
     // A `precompute` installs nothing: the window has not shrunk. Only a compaction the person typed counts as their answer.
     if (e.agentId === undefined && done.skip === undefined && e.trigger !== 'precompute') {
       await change($, f => applyCompacted(f, done.tokensAfter))
@@ -1754,12 +1858,12 @@ export const register: Register = (on, options) => {
     const decided = await next(e)
     if (decided.decision !== 'ask') return decided
     await svEnsure($)
-    if (modeFor('A1') !== 'auto') return decided
     const path = (e.input as { file_path?: unknown } | null)?.file_path
+    if (typeof path !== 'string' || sv.saveDir === '' || !isInsideDir(sv.saveDir, path)) return decided
+    // A note it wrote of an earlier conversation is the person's own file in their own temp folder; the digest's setting does not matter.
+    if (sv.canSave && isNoteFile(path)) return { decision: 'allow' as const, reason: 'tokenomics: the note it saved of the conversation before' }
 
-    return typeof path === 'string' && sv.saveDir !== '' && isInsideDir(sv.saveDir, path)
-      ? { decision: 'allow' as const, reason: 'tokenomics: the full text of an output it shortened' }
-      : decided
+    return modeFor('A1') === 'auto' ? { decision: 'allow' as const, reason: 'tokenomics: the full text of an output it shortened' } : decided
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
@@ -1776,6 +1880,11 @@ export const register: Register = (on, options) => {
     }
     await svSweep($)
     await svFlush($)
+    // After the ledger is out, so a slow transcript read cannot cost it; the note's own signals follow with a second write.
+    if (e.reason === 'clear') {
+      await svClearNote($, next.budget.remainingMs)
+      await svFlush($)
+    }
 
     return next(e)
   })
@@ -1899,7 +2008,7 @@ export const register: Register = (on, options) => {
       offers: standingOffers(ctx, mutedKinds),
       savings: await read($, savings),
       heavy: await read($, heavy),
-      active: activeSavings(ctx.modes),
+      active: activeSavings(ctx.modes, isNoteByDefault()),
       muted: mutedKinds,
       isCompacting: (await read($, busy)) === 'compact',
       hasCat: catSite !== null && !ctx.facts.isMotionReduced,

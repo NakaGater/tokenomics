@@ -1159,3 +1159,204 @@ test('a failed command’s big output cannot be cut (the engine refuses an error
   expect(count(ledger, 'A1:fired:auto')).toBe(0)
   expect(count(ledger, 'A1:error:observe')).toBe(0)
 })
+
+// ── /clear: the note, and the one line for the conversation that follows ─────────────────────────────────
+
+const WORK = [
+  { role: 'user' as const, text: 'Make the savings visible', toolUses: [] },
+  { role: 'assistant' as const, text: '', toolUses: [{ tool_use_id: 'e1', tool: 'Edit', input: { file_path: '/repo/band.tsx' } }] },
+  { role: 'assistant' as const, text: 'Next: check the band at 80 columns.', toolUses: [] },
+]
+const GIT = '## token-usage-advisor...origin/token-usage-advisor [ahead 1]\n M mods/tokenomics/hooks/register.tsx\n?? notes.md\n'
+const CLEAR = { reason: 'clear', sessionId: 'sess-1' } as never
+const notes = (calls: Calls) => calls.writes.filter(w => w.path.startsWith(`${DIR}/handoff-`))
+const afterClear = ($: Driver) => $.classic.SessionStart({ source: 'clear' } as never)
+const ledgerNow = (calls: Calls) => parseLedger(calls.store.get('ledger:v1'))
+
+test('/clear writes a note of the conversation, and the next one is told in a line where it is, with the git state added', async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK, git: GIT })
+  await $.session.start(START)
+
+  await $.session.end(CLEAR)
+  expect(notes(calls)).toHaveLength(1)
+  const path = notes(calls)[0]!.path
+  expect(notes(calls)[0]!.text).toContain('# Work notes saved before /clear')
+  expect(notes(calls)[0]!.text).toContain('Make the savings visible')
+  expect(notes(calls)[0]!.text).toContain('Next: check the band at 80 columns.')
+  // The git state is not asked for in the time `session.end` leaves.
+  expect(calls.processes).toEqual([])
+
+  const started = await afterClear($)
+  expect(started.additionalContext).toHaveLength(1)
+  expect(started.additionalContext![0]).toContain(path)
+  expect(started.additionalContext![0]).toContain('only if the person asks you to carry on')
+  expect(calls.processes).toEqual([['git', 'status', '--short', '--branch']])
+  const final = notes(calls).at(-1)!
+  expect(final.path).toBe(path)
+  expect(final.text).toContain('branch: token-usage-advisor...origin/token-usage-advisor [ahead 1]')
+  expect(final.text).toContain(' M mods/tokenomics/hooks/register.tsx')
+  // The model is not asked: it costs nothing.
+  expect(calls.steps).toEqual([])
+
+  // The ledger holds what happened, for the person's own look.
+  const ledger = await ledgerOf($, calls)
+  expect(count(ledger, 'S:signal:observe:clear_note_written')).toBe(1)
+  expect(count(ledger, 'S:signal:observe:clear_pointer_given')).toBe(1)
+})
+
+test('the ledger is written out at a /clear, with the note’s own signal, before the next conversation has begun', async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect(count(ledgerNow(calls), 'S:signal:observe:clear_note_written')).toBe(1)
+  expect(sum(ledgerNow(calls), 'S:chars')).toBeGreaterThan(100)
+})
+
+test('the line is given once: a second start after a /clear, and a start that is not a /clear, get none', async ($, on) => {
+  engine(on, { tmp: TMP, messages: WORK })
+  await $.session.start(START)
+
+  await $.session.end(CLEAR)
+  expect((await afterClear($)).additionalContext).toHaveLength(1)
+  expect((await afterClear($)).additionalContext ?? []).toEqual([])
+  await $.session.end(CLEAR)
+  for (const source of ['startup', 'resume', 'compact', 'fork']) expect((await $.classic.SessionStart({ source } as never)).additionalContext ?? []).toEqual([])
+})
+
+test('a /clear of a conversation with nothing in it, or that cannot be read, leaves no note and no line, and says why in the ledger', async ($, on) => {
+  const empty = engine(on, { tmp: TMP, messages: [] })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect(notes(empty)).toEqual([])
+  expect((await afterClear($)).additionalContext ?? []).toEqual([])
+  expect(count(ledgerNow(empty), 'S:signal:observe:clear_note_skipped_unavailable')).toBe(1)
+  expect(count(await ledgerOf($, empty), 'S:signal:observe:clear_start_without_note')).toBe(1)
+})
+
+test('a conversation with a request that was never answered is not worth a note', async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: [{ role: 'user', text: 'hello', toolUses: [] }] })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect(notes(calls)).toEqual([])
+  expect(count(ledgerNow(calls), 'S:signal:observe:clear_note_skipped_empty')).toBe(1)
+})
+
+test('without a temp folder of the person’s own, a /clear leaves no note and no line', async ($, on) => {
+  const calls = engine(on, { messages: WORK })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect(notes(calls)).toEqual([])
+  expect((await afterClear($)).additionalContext ?? []).toEqual([])
+  expect(count(ledgerNow(calls), 'S:signal:observe:clear_note_skipped_tmp')).toBe(1)
+})
+
+test('set to off, a /clear writes nothing and says nothing', { options: { handoffNote: false } }, async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect(notes(calls)).toEqual([])
+  expect((await afterClear($)).additionalContext ?? []).toEqual([])
+  expect(calls.processes).toEqual([])
+})
+
+test('a person held back from the savings gets no note and no line, though the ledger says it was skipped', { options: { holdoutPercent: 100 } }, async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect(notes(calls)).toEqual([])
+  expect((await afterClear($)).additionalContext ?? []).toEqual([])
+  expect(count(ledgerNow(calls), 'S:signal:control:clear_note_skipped_control') + count(ledgerNow(calls), 'S:signal:observe:clear_note_skipped_control')).toBe(1)
+})
+
+test('a note that cannot be written is a quiet failure: no line, and the end of the session goes on', async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK, isWriteBroken: true })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect((await afterClear($)).additionalContext ?? []).toEqual([])
+  expect(count(ledgerNow(calls), 'S:signal:observe:clear_note_failed')).toBe(1)
+})
+
+test('any other end of a session writes no note', async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK })
+  await $.session.start(START)
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 'sess-1' } as never)
+  expect(notes(calls)).toEqual([])
+})
+
+test('git that cannot run leaves the note as it was written, and the line is still given', async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  const started = await afterClear($)
+  expect(started.additionalContext).toHaveLength(1)
+  expect(notes(calls)).toHaveLength(1)
+  expect(notes(calls)[0]!.text).not.toContain('Git state')
+})
+
+test('the model may read the note after a /clear without being asked, whatever the digest does; other files still ask', { options: { digest: 'off' } }, async ($, on) => {
+  engine(on, { tmp: TMP, messages: WORK })
+  on('tool.check', () => ({ decision: 'ask', reason: 'because' }))
+  await $.session.start(START)
+  const check = (file_path: string) => $.tool.check({ tool: 'Read', input: { file_path } } as never)
+  expect((await check(`${DIR}/handoff-1000000.md`)).decision).toBe('allow')
+  expect((await check(`${DIR}/out-a.log`)).decision).toBe('ask')
+  expect((await check('/etc/hosts')).decision).toBe('ask')
+  expect((await check(`${DIR}/../other/handoff-1.md`)).decision).toBe('ask')
+})
+
+test('a long task after an auto-compaction: the only user turn is the carried-over summary, and a /clear still writes a note holding its head', async ($, on) => {
+  const carried = {
+    role: 'user' as const,
+    text: 'This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. Primary Request and Intent:\n   - Make the savings visible to users\n',
+    toolUses: [],
+  }
+  const calls = engine(on, {
+    tmp: TMP,
+    messages: [
+      carried,
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'e1', tool: 'Edit', input: { file_path: '/repo/band.tsx' } }] },
+      { role: 'assistant', text: 'Next: the report.', toolUses: [] },
+    ],
+  })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  expect(notes(calls)).toHaveLength(1)
+  expect(notes(calls)[0]!.text).toContain('Primary Request and Intent')
+  expect(notes(calls)[0]!.text).toContain('/repo/band.tsx')
+  expect((await afterClear($)).additionalContext).toHaveLength(1)
+})
+
+test('the git state is asked for within the time the start has, and a git that fails never costs the line', async ($, on) => {
+  const calls = engine(on, { tmp: TMP, messages: WORK, isGitBroken: true })
+  await $.session.start(START)
+  await $.session.end(CLEAR)
+  const started = await afterClear($)
+  expect(calls.processTimeouts).toEqual([2_000])
+  expect(started.additionalContext).toHaveLength(1)
+  expect(notes(calls)).toHaveLength(1)
+})
+
+const TOPIC = { options: { nudges: 'suggest', hud: false } } as const
+
+test('suggest, a topic change: where /clear writes its own note the line says so, and does not ask for one first', TOPIC, async ($, on) => {
+  engine(on, { tmp: TMP })
+  await $.session.start(START)
+  await runStep($, { model: 'claude-sonnet-5-5' })
+  await $.session.measure(subscription(20))
+  await ask($, '別件ですが、請求書のPDF出力を作ってください')
+
+  const text = (await reply($, 't1', { ...SMALL, model: 'claude-sonnet-5-5' })).text
+  expect(text).toContain('要点は /clear のときに自動でメモに残ります')
+  expect(text).not.toContain('/tokenomics handoff')
+})
+
+test('suggest, a topic change: with no note to be written the line still asks for one first', { options: { nudges: 'suggest', hud: false, handoffNote: false } }, async ($, on) => {
+  engine(on, { tmp: TMP })
+  await $.session.start(START)
+  await runStep($, { model: 'claude-sonnet-5-5' })
+  await $.session.measure(subscription(20))
+  await ask($, '別件ですが、請求書のPDF出力を作ってください')
+
+  expect((await reply($, 't1', { ...SMALL, model: 'claude-sonnet-5-5' })).text).toContain('/tokenomics handoff')
+})
+

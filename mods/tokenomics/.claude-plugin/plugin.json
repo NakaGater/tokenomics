@@ -1,6 +1,6 @@
 {
   "name": "tokenomics",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Shows how much of the context a session has used, says what to do about it at the moment it helps, and quietly keeps big outputs and lighter subagents from costing more than they should.",
   "author": { "name": "NakaGater" },
   "types": "./types/index.d.ts",
@@ -38,6 +38,12 @@
       "description": "suggest: 返信のあとに一行で提案する（会話が重い／別件のようだ／キャッシュが切れた。何も入力はされません）／observe: 提案するはずだった場面を記録だけ／off: 何もしない",
       "default": "observe",
       "options": ["suggest", "observe", "off"]
+    },
+    "handoffNote": {
+      "type": "boolean",
+      "title": "会話が消える前にメモを残す（/clear・要約）",
+      "description": "/clear の直前と、要約（/compact・自動要約）の直前に、会話の要点（依頼・最後の回答・触ったファイル・実行したコマンド・git の状態）を一時フォルダのメモに書き、続きの会話には、その場所を一行だけ伝えます（読むのは、前の続きや足りない詳細が要るときだけ）。モデルは呼ばないので費用は 0 です。",
+      "default": true
     },
     "holdoutPercent": {
       "type": "number",

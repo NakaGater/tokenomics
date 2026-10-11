@@ -3,6 +3,7 @@ import { type Engine, expect, test } from 'claude-code/testing'
 
 import { FACE } from '../hooks/lib/mascot'
 
+import { parseLedger } from '../hooks/lib/core/ledger'
 import { MODEL_SWITCH, SURFACES, answer, bandProps, engine, measure, offerPaneProps, paneProps, runStep, type Calls } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
@@ -687,3 +688,89 @@ test('one suggestion at a time, the most urgent first, and the next only at the 
   const dialog = await $.ui.mount({ ...offerPaneProps, surface: 'terminal' })
   expect(await dialog.find({ type: 'Text', text: '会話がいっぱいに近づいています' })).toBeDefined()
 })
+
+// ── The note before a compaction is on by default, and the conversation that goes on is told where it is ──
+
+const NOTE = '/t/claude-tokenomics/s/handoff-1.md'
+const sessionStart = ($: Driver, source: string) => $.classic.SessionStart({ source } as never)
+const signals = async ($: Driver, calls: Calls, key: string): Promise<number> => {
+  await $.session.end({ reason: 'exit', sessionId: 's' } as never)
+  return parseLedger(calls.store.get('ledger:v1')).days.reduce((n, d) => n + (d.counts[key] ?? 0), 0)
+}
+
+test('with no offer accepted, a compaction is still preceded by a note, and the conversation that goes on is told once where it is', async ($, on) => {
+  const calls = engine(on, { tmp: '/t', sessionId: 's', messages: transcript })
+  await $.session.start(START)
+
+  await $.session.compact(compactInput({ instructions: 'focus on the plan' }))
+  expect(calls.writes.map(w => w.path)).toEqual([NOTE])
+  expect(calls.compactions.at(-1)?.instructions).toContain(`Details: ${NOTE}`)
+  // Git is asked within the time the hook has, so a slow repository cannot make the compaction's own hook overrun.
+  expect(calls.processTimeouts).toEqual([2_000])
+
+  const started = await sessionStart($, 'compact')
+  expect(started.additionalContext).toHaveLength(1)
+  expect(started.additionalContext![0]).toContain(NOTE)
+  expect(started.additionalContext![0]).toContain('The summary is the main record')
+  expect((await sessionStart($, 'compact')).additionalContext ?? []).toEqual([])
+  for (const source of ['startup', 'resume', 'fork']) expect((await sessionStart($, source)).additionalContext ?? []).toEqual([])
+  expect(await signals($, calls, 'S:signal:observe:compact_note_written')).toBe(1)
+  expect(await signals($, calls, 'S:signal:observe:compact_pointer_given')).toBe(1)
+})
+
+test('a compaction that installed nothing, a precomputed summary and a subagent’s compaction leave no line for the next start', async ($, on) => {
+  const calls = engine(on, { tmp: '/t', sessionId: 's', messages: transcript, compacted: { skip: 'nothing to compact' } })
+  await $.session.start(START)
+
+  await $.session.compact(compactInput())
+  expect((await sessionStart($, 'compact')).additionalContext ?? []).toEqual([])
+  await $.session.compact(compactInput({ trigger: 'precompute' }))
+  expect((await sessionStart($, 'compact')).additionalContext ?? []).toEqual([])
+  await $.session.compact(compactInput({ agentId: 'sub-1' }))
+  expect((await sessionStart($, 'compact')).additionalContext ?? []).toEqual([])
+  expect(calls.writes.map(w => w.path)).toEqual([NOTE, '/t/claude-tokenomics/s/handoff-pre.md'])
+})
+
+test('set to off, no note is written before a compaction until an offer to compact is accepted', { options: { handoffNote: false } }, async ($, on) => {
+  const calls = engine(on, { tmp: '/t', sessionId: 's', messages: transcript })
+  await $.session.start(START)
+
+  await $.session.compact(compactInput())
+  expect(calls.writes).toEqual([])
+  expect(calls.compactions.at(-1)?.instructions).toBeUndefined()
+  expect((await sessionStart($, 'compact')).additionalContext ?? []).toEqual([])
+  expect(await signals($, calls, 'S:signal:observe:compact_start_without_note')).toBe(0)
+
+  // The offer still does what it did: it asks for the note, now and from then on.
+  await $.session.measure(state(80))
+  await answer($ as never, 'accept')
+  expect(calls.writes.map(w => w.path)).toEqual([NOTE])
+  expect((await sessionStart($, 'compact')).additionalContext?.[0]).toContain(NOTE)
+})
+
+test('a person held back from the savings gets no note and no line on their own', { options: { holdoutPercent: 100 } }, async ($, on) => {
+  const calls = engine(on, { tmp: '/t', sessionId: 's', messages: transcript })
+  await $.session.start(START)
+  await $.session.compact(compactInput())
+  expect(calls.writes).toEqual([])
+  expect((await sessionStart($, 'compact')).additionalContext ?? []).toEqual([])
+})
+
+test('a compaction start with no note where one was to be expected is counted, for the person who looks', async ($, on) => {
+  const calls = engine(on, { messages: transcript })
+  await $.session.start(START)
+  await $.session.compact(compactInput())
+  expect((await sessionStart($, 'compact')).additionalContext ?? []).toEqual([])
+  expect(await signals($, calls, 'S:signal:observe:compact_start_without_note')).toBe(1)
+})
+
+test('where the note is on by default, the offer does not speak of starting it', async ($, on) => {
+  engine(on, { tmp: '/t', sessionId: 's', messages: transcript })
+  await $.session.start(START)
+  await $.session.measure(state(80))
+  const dialog = await $.ui.mount({ ...offerPaneProps, surface: 'terminal' })
+  expect(await dialog.find({ type: 'Text', text: /メモに残してから要約します/ })).toBeDefined()
+  expect(await dialog.find({ type: 'Text', text: /以降の要約でも/ })).toBeUndefined()
+  await dialog.unmount()
+})
+

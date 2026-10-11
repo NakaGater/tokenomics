@@ -66,8 +66,11 @@ export const chooseNudge = (candidates: readonly Candidate[], s: Situation): Cho
 const dollars = (milli: number | null, isSubscription: boolean): string =>
   isSubscription || milli === null || milli <= 0 ? '' : `（約 ${formatUsd(milli / 1000)}）`
 
-/** The line, in the person's words. `costMilliUsd` is what a lapsed cache cost the turn just ended, for the one that says so. */
-export const nudgeLine = (c: Candidate, isSubscription: boolean, costMilliUsd: number | null = null): string => {
+/**
+ * The line, in the person's words. `costMilliUsd` is what a lapsed cache cost the turn just ended, for the one that says so.
+ * `isNoted`: a /clear writes its own note, so the person need not ask for one first.
+ */
+export const nudgeLine = (c: Candidate, isSubscription: boolean, costMilliUsd: number | null = null, isNoted = false): string => {
   const tokens = formatTokens(c.ctx)
   if (c.measure === 'C2') {
     return c.tag === 'strong'
@@ -77,7 +80,9 @@ export const nudgeLine = (c: Candidate, isSubscription: boolean, costMilliUsd: n
   if (c.measure === 'C3') {
     return `しばらく空いたため、会話全体（約 ${tokens} tok）を読み直しました${dollars(costMilliUsd, isSubscription)}。続きが別件なら、/clear が一番軽くなります。`
   }
-  return `別件のようです。/clear で新しく始めると、以降の読み直し（約 ${tokens} tok）がなくなります（今の回答も消えるので、残したい内容は先に /tokenomics handoff でメモを）。`
+  return isNoted
+    ? `別件のようです。/clear で新しく始めると、以降の読み直し（約 ${tokens} tok）がなくなります（今の回答は消えますが、要点は /clear のときに自動でメモに残ります）。`
+    : `別件のようです。/clear で新しく始めると、以降の読み直し（約 ${tokens} tok）がなくなります（今の回答も消えるので、残したい内容は先に /tokenomics handoff でメモを）。`
 }
 
 /**

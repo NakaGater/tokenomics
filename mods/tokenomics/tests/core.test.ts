@@ -50,13 +50,13 @@ describe('options', () => {
   })
 
   test('values that fit are taken, and numbers are held to their range', () => {
-    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', holdoutPercent: 250, cacheTtlMinutes: 500 })
-    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', holdoutPercent: 100, cacheTtlMinutes: 120 })
+    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', handoffNote: false, holdoutPercent: 250, cacheTtlMinutes: 500 })
+    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', handoffNote: false, holdoutPercent: 100, cacheTtlMinutes: 120 })
     expect(parseOptions({ cacheTtlMinutes: -3 }).cacheTtlMinutes).toBe(0)
   })
 
   test('a value that does not fit counts as unset', () => {
-    const o = parseOptions({ hud: 'yes', digest: 'maybe', nudges: 'loud', holdoutPercent: Number.NaN, cacheTtlMinutes: 'five' })
+    const o = parseOptions({ hud: 'yes', digest: 'maybe', nudges: 'loud', handoffNote: 'sometimes', holdoutPercent: Number.NaN, cacheTtlMinutes: 'five' })
     expect(o).toEqual(DEFAULT_OPTIONS)
   })
 })

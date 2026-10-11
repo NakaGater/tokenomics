@@ -65,6 +65,9 @@ export type Calls = {
   configSets: { key: string; value: unknown }[]
   agents: { name: string; model?: string; effort?: string | number; tools?: readonly string[]; omitClaudeMd?: true; permissionMode?: string }[]
   writes: { path: string; text: string }[]
+  /** The commands the mod ran on the host, by argv, and the time each was given. */
+  processes: string[][]
+  processTimeouts: (number | undefined)[]
   compactions: { trigger: string; instructions?: string }[]
   steps: { model: string; effort?: string | number; agentId?: string }[]
   clock: ReturnType<typeof mock.clock>
@@ -111,6 +114,10 @@ type EngineOptions = {
   sessionId?: string
   /** What the transcript holds, for a note to be made from. */
   messages?: SessionMessage[]
+  /** What `git status --short --branch` prints; absent, the folder is not a repository. */
+  git?: string
+  /** Running git fails (it is not installed, or too slow). */
+  isGitBroken?: boolean
   /** The size the engine auto-compacts at, and who set it; a size under 400k is the default here, so no suggestion about it arises. */
   autoCompactWindow?: { threshold?: number; source?: string }
   /** More of what the breakdown lists: memory files, skills, MCP tools, agents, slash commands. */
@@ -140,6 +147,8 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
     configSets: [],
     agents: [],
     writes: [],
+    processes: [],
+    processTimeouts: [],
     compactions: [],
     steps: [],
     clock: mock.clock(on, { now: 1_000_000 }),
@@ -235,6 +244,13 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
   mock.env(on, { ...(options.tmp === undefined ? {} : { TMPDIR: options.tmp }), ...options.env })
   on('session.id', () => ({ value: options.sessionId ?? 'sess-1' }))
   on('session.messages', () => ({ value: options.messages ?? [] }))
+  on('process.run', (_$, e) => {
+    calls.processes.push([...e.argv])
+    calls.processTimeouts.push(e.init?.timeoutMs)
+    if (options.isGitBroken) throw new Error('git is slow')
+    const base = { stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+    return { value: options.git === undefined ? { ...base, exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } : { ...base, exitCode: 0, stdout: options.git } }
+  })
   on('fs.write', (_$, e) => {
     if (options.isWriteBroken) throw new Error('disk full')
     calls.writes.push({ path: e.path, text: e.text })

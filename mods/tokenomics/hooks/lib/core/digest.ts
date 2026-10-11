@@ -115,5 +115,8 @@ export const digestPath = (dir: string, toolUseId: string): string => `${dir}/ou
 /** Whether `path` names a saved command output (not the work notes kept beside them). */
 export const isDigestFile = (path: string): boolean => /\/out-[A-Za-z0-9_-]+\.log$/.test(path)
 
+/** A note the mod saved of a conversation (compaction, `/clear` or `/tokenomics handoff`), in the same folder as the saved outputs. */
+export const isNoteFile = (path: string): boolean => /\/handoff-[A-Za-z0-9_-]+\.md$/.test(path)
+
 /** A command as it is compared with an earlier one: the same words, one space between. */
 export const normalizeCommand = (command: string): string => command.trim().replace(/\s+/g, ' ')
