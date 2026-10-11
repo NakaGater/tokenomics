@@ -10,3 +10,19 @@ for mod in mods/*/; do
   bunx tsc -p "$mod"
   claude plugin test "$mod"
 done
+
+echo "== bench harness (stubbed: no model is called)"
+BENCH_CLAUDE="$PWD/bench/stub-claude.sh" scripts/bench.sh bench/tasks/fix-failing-test 2 haiku > /dev/null
+# A run that prints nothing has no numbers: it is counted as no_data and shown as "-", never as a blank or a 0.
+silent="$(BENCH_CLAUDE=true scripts/bench.sh bench/tasks/fix-failing-test 1 haiku)"
+echo "$silent" | grep -Eq '^off +1 +0 +1 +- +- +-$' || { echo "bench.sh: a run with no output is not shown as no_data" >&2; exit 1; }
+rm -rf bench/results
+
+echo "== pilot report (on sample exports)"
+report="$(scripts/ledger-report.sh scripts/testdata/ledger-sample-a.json scripts/testdata/ledger-sample-b.json)"
+echo "$report" | grep -qF "参加者: 2 人" && echo "$report" | grep -qF "採用率 25%" && echo "$report" | grep -qF '$0.80' || { echo "ledger-report.sh: the sample report is not as expected" >&2; exit 1; }
+# The same person twice (weekly exports overlap) is refused, not counted twice.
+if scripts/ledger-report.sh scripts/testdata/ledger-sample-a.json scripts/testdata/ledger-sample-a.json > /dev/null 2>&1; then
+  echo "ledger-report.sh: one person in two files must be refused" >&2
+  exit 1
+fi
