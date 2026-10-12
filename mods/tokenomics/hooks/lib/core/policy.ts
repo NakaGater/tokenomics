@@ -22,8 +22,8 @@ export const MEASURES: Record<MeasureId, Measure> = {
   B2: { tier: 'B', label: 'サブエージェントの effort', option: 'delegation', modes: ['off', 'observe', 'auto'] },
   // Replacing Explore with the light scout is watched only, for now.
   B3: { tier: 'B', label: 'Explore の置き換え', option: 'delegation', modes: ['off', 'observe'] },
-  // The main conversation's own search or whole test run is turned back once, with the light skill named. The only measure that refuses a call.
-  B6: { tier: 'B', label: '調査・テストをスキルへ', option: 'steer', modes: ['off', 'observe', 'auto'] },
+  // The main conversation's own second search, whole test run or long log read is turned back, with the light skill named; the same call again runs. The only measure that refuses a call.
+  B6: { tier: 'B', label: '調査・テスト・ログをスキルへ', option: 'steer', modes: ['off', 'observe', 'auto'] },
   C1: { tier: 'C', label: '話題転換 → /clear', option: 'nudges', modes: ['off', 'observe', 'suggest'] },
   C2: { tier: 'C', label: '文脈肥大 → /compact', option: 'nudges', modes: ['off', 'observe', 'suggest'] },
   C3: { tier: 'C', label: 'キャッシュ切れ', option: 'nudges', modes: ['off', 'observe', 'suggest'] },

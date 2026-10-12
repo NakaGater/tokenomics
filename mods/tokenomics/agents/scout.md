@@ -1,6 +1,6 @@
 ---
 name: scout
-description: Cheap read-only investigator. Use to find where something is defined or used, or how a part of the code works, so the files read stay out of your context. Returns a short report with file paths and line numbers.
+description: Cheap read-only investigator. Use to find where something is defined or used, how a part of the code works, or what a long file you will not edit says, so the files read stay out of your context. Returns a short report with file paths and line numbers.
 model: haiku
 effort: low
 tools: Read, Grep, Glob, LSP

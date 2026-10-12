@@ -1,19 +1,26 @@
 /**
- * B6: the main conversation does a search or a whole test run itself, where a light skill (`scout`, `test-summary`) would keep
- * the output out of its context. The call is turned back once, with a note that names the skill and says how to go on with
- * the same call. Pure: what the hook remembers lives in `SteerState`, and every step returns the next one.
+ * B6: the main conversation does a search, a whole test run or a read of a long log itself, where a light skill (`scout`,
+ * `test-summary`, `log-digest`) would keep the output out of its context. The call is turned back, with a note that names the skill
+ * and says how to go on with the same call (that is how the model says it is the exception). A test run or a log is turned back
+ * every time; a search waits longer between times the more the model insists. Pure: what the hook remembers lives in
+ * `SteerState`, and every step returns the next one.
  */
 
 import { ASSUMED_TURNS_AFTER, PRICES, keptOutUsd, modelFamily } from './economics'
 
-export type SteerKind = 'search' | 'test'
+export type SteerKind = 'search' | 'test' | 'log'
 
-/** The Nth search of a turn is the first one turned back: a quick lookup or two is cheap, an investigation is not. */
-export const SEARCH_AT = 3
-/** A kind is turned back again only this many turns after the last time; it doubles with every time the model insisted. */
+/** The Nth search of a turn is the first one turned back: a quick lookup is cheap, an investigation is not. */
+export const SEARCH_AT = 2
+/** A search is turned back again only this many turns after the last time; it doubles with every time the model insisted. */
 export const GAP_TURNS = 3
 /** The longest that gap grows to. */
 export const MAX_GAP_TURNS = 24
+/**
+ * The kinds that wait between times. A whole test run and a long log are nearly always long and the exception is seen in the call
+ * (a name, a pipe, a limit), so they are turned back every time; a search is often small, so the model's insisting lengthens the wait.
+ */
+const WAITS: readonly SteerKind[] = ['search']
 /** A skill used this soon after a call was turned back counts as the answer to it. */
 export const ANSWER_TURNS = 2
 
@@ -144,6 +151,48 @@ const isSuiteRun = (command: string): boolean => {
   return SUITES.some(r => r.test(words.join(' ')))
 }
 
+/** A log printed with a limit of this many lines or fewer is small enough to read directly. */
+export const SMALL_LOG_LINES = 200
+
+/** A flag that follows the log as it grows (a short flag among others too: `-fu`): that is watching, not reading. */
+const FOLLOWS = /\s(?:--follow|-[A-Za-z]*f[A-Za-z]*)(?=\s|$)/
+
+/** The line count a log command limits itself to (`--tail 50`, `--tail=50`, `-n 50`, `--lines=50`), or null where it has none. */
+const limitedTo = (line: string): number | null => {
+  const m = /(?:^|\s)(?:--tail|--lines|-n)(?:\s*=\s*|\s+|(?=\d))(\d+)(?=\s|$)/.exec(line)
+
+  return m?.[1] === undefined ? null : Number(m[1])
+}
+
+/**
+ * Whether a command prints a log that can be long, all of it: the commands whose job is that (`docker logs`, `kubectl logs`,
+ * `journalctl`, a CI run's `--log`), or `cat` and a pager on a `*.log` file. A limit of a few lines, following the log as it grows,
+ * a pipe and a redirect make it something else: the caller already narrows what comes back. A list of kinds, not of every command
+ * that can print a log: what is not on it is not turned back.
+ */
+const isLogRead = (command: string): boolean => {
+  const only = segments(command).filter(s => !/^cd(?:\s|$)/.test(s))
+  if (only.length !== 1) return false
+  const line = (only[0] ?? '').replace(/\s*2>&1/g, '')
+  if (/[|<>]/.test(line)) return false
+
+  if (/^(?:docker(?:\s+compose)?|docker-compose|podman(?:\s+compose)?)\s+logs\b/.test(line) || /^kubectl\b.*\slogs\b/.test(line) || /^journalctl\b/.test(line)) {
+    if (FOLLOWS.test(line)) return false
+    const limit = limitedTo(line)
+
+    return limit === null || limit > SMALL_LOG_LINES
+  }
+  if (/^gh\s+run\s+view\b/.test(line)) return /\s--log(?:-failed)?(?=\s|$)/.test(line)
+  if (/^(?:cat|less|more|bat)\b/.test(line)) {
+    return line
+      .split(/\s+/)
+      .slice(1)
+      .some(w => /\.log(?:\.\d+)?$/.test(w.replace(/^['"]|['"]$/g, '')))
+  }
+
+  return false
+}
+
 /** Where a command may write without touching the work: the null device and scratch space. */
 const SCRATCH = /^(?:\/dev\/|\/tmp\/|\/private\/(?:tmp|var)\/|\/var\/folders\/|\$\{?TMPDIR\}?\/)/
 
@@ -229,11 +278,12 @@ export const isBashEdit = (command: string): boolean => {
   return scriptWrites(command).some(inTree)
 }
 
-/** What a tool call is, for this measure: a search or a whole-suite test run, or neither. */
+/** What a tool call is, for this measure: a search, a whole-suite test run or a read of a long log, or none of them. */
 export const callKind = (tool: string, input: Record<string, unknown>): SteerKind | null => {
   if (tool === 'Grep' || tool === 'Glob') return 'search'
   if (tool !== 'Bash' || typeof input.command !== 'string') return null
   if (isSuiteRun(input.command)) return 'test'
+  if (isLogRead(input.command)) return 'log'
 
   return isSearch(input.command) ? 'search' : null
 }
@@ -272,11 +322,13 @@ export const steerStep = (s: SteerState, tool: string, input: Record<string, unk
     const insists = { ...counted.insists, [kind]: (counted.insists[kind] ?? 0) + 1 }
     return { say: 'insist', kind, next: { ...counted, refused: null, insisted, insists } }
   }
+  // Only watching, the repeat of a call that would have been turned back is the model going on, as insisting would be: not a new case.
+  if (isDry && s.refused !== null && s.refused.key === key && turn - s.refused.turn <= ANSWER_TURNS) return { say: 'pass', next: counted }
   if (counted.insisted.includes(kind)) return { say: 'pass', next: counted }
   if (kind === 'search' && (counted.searches < SEARCH_AT || counted.hasEdited || !delegationPays(counted, model))) return { say: 'pass', next: counted }
   const last = counted.lastAt[kind]
-  // Every time the model insisted, the wait before it is asked again doubles.
-  const gap = Math.min(MAX_GAP_TURNS, GAP_TURNS * 2 ** (counted.insists[kind] ?? 0))
+  // Every time the model insisted on a search, the wait before it is asked again doubles. The other kinds do not wait.
+  const gap = WAITS.includes(kind) ? Math.min(MAX_GAP_TURNS, GAP_TURNS * 2 ** (counted.insists[kind] ?? 0)) : 0
   if (last !== undefined && turn - last < gap) return { say: 'pass', next: counted }
 
   return {
@@ -296,6 +348,9 @@ export const steerAnswered = (s: SteerState, turn: number): { next: SteerState; 
  * is the conversation's size, so that the model knows what each further search costs it.
  */
 export const steerNote = (kind: SteerKind, searches: number, contextTokens: number | null = null): string => {
+  if (kind === 'log') {
+    return 'tokenomics: this prints a log that can be long, and it was not run. If you only need to know what went wrong, call the Skill tool with skill "tokenomics:log-digest" (args: the same command, or the path of the log file): a cheap agent reads it and returns the errors and their cause in a few lines. If you need the full text, make this same call again and it will run.'
+  }
   if (kind === 'test') {
     return 'tokenomics: this runs the whole test suite, and it was not run. If you only need to know what failed, call the Skill tool with skill "tokenomics:test-summary" (args: the command, or nothing for the usual one): a cheap agent runs it and returns only the failures. If you need the full output, make this same call again and it will run.'
   }

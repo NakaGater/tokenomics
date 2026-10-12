@@ -1,6 +1,6 @@
 {
   "name": "tokenomics",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Shows how much of the context a session has used, says what to do about it at the moment it helps, and quietly keeps big outputs and lighter subagents from costing more than they should.",
   "author": { "name": "NakaGater" },
   "types": "./types/index.d.ts",
@@ -27,8 +27,8 @@
     },
     "steer": {
       "type": "string",
-      "title": "調査・テストをスキルへ誘導する",
-      "description": "auto: モデル自身が検索を重ねたり、テスト全体を流したりしようとしたとき、一度だけ止めて、軽いスキル（scout・test-summary）を使えないか考えさせる（同じ呼び出しをもう一度すれば実行される）／observe: 止めるはずだった場面を記録だけ／off: 何もしない",
+      "title": "調査・テスト・ログをスキルへ誘導する",
+      "description": "auto: モデル自身が検索を重ねたり（2 回目から）、テスト全体を流したり、長いログを読んだりしようとしたとき、止めて、軽いスキル（scout・test-summary・log-digest）を使えないか考えさせる（同じ呼び出しをもう一度すれば実行される。テストとログは毎回、検索は押し通すほど間隔を空けて）／observe: 止めるはずだった場面を記録だけ／off: 何もしない",
       "default": "observe",
       "options": ["auto", "observe", "off"]
     },

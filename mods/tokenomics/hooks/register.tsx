@@ -1000,7 +1000,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.1'
+const MOD_VERSION = '0.6.2'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1430,8 +1430,8 @@ const svStepped = async ($: Dollar, usedAdvisor: boolean): Promise<void> => {
 }
 
 /**
- * B6: before a tool call of the main conversation. A search it keeps making, or a whole test run, is turned back once with the
- * light skill named (the note is the answer); the same call made again runs. A subagent's calls are never touched, the ones the
+ * B6: before a tool call of the main conversation. A search it keeps making, a whole test run or a read of a long log is turned back
+ * with the light skill named (the note is the answer); the same call made again runs. A subagent's calls are never touched, the ones the
  * skills fork among them. A call of the plugin's own skill is no search; it is counted once it has run (`svLaunched`).
  */
 const svSteer = ($: Dollar, tool: string, input: Record<string, unknown>, agentId: string | undefined): Promise<string | undefined> =>

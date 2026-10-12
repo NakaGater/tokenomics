@@ -23,6 +23,8 @@ report="$(scripts/ledger-report.sh scripts/testdata/ledger-sample-a.json scripts
 echo "$report" | grep -qF "参加者: 2 人" && echo "$report" | grep -qF "採用率 25%" && echo "$report" | grep -qF '$0.80' || { echo "ledger-report.sh: the sample report is not as expected" >&2; exit 1; }
 # What was handed to the skills is told as an estimate, apart from the digest's figure, and the arms are set side by side.
 echo "$report" | grep -qF "任せた 4 回" && echo "$report" | grep -qF "控えめな推定です" && echo "$report" | grep -qF "control（1 人）" && echo "$report" | grep -qF "treat（1 人）" && echo "$report" | grep -qF "止めた 4 回" && echo "$report" | grep -qF "止めた回数に対して 50%" && echo "$report" | grep -qF "止めるはずだった回数に対して 25%" || { echo "ledger-report.sh: the delegation, steering or arm sections are not as expected" >&2; exit 1; }
+# The steering by kind: stopped, then used or insisted on.
+echo "$report" | grep -qF "検索 4 → 2 ・ 1 ／ テスト 0 → 0 ・ 0 ／ ログ（0.6.2 から）0 → 0 ・ 0" || { echo "ledger-report.sh: the steering by kind is not as expected" >&2; exit 1; }
 # The auto-compact timing: sets from the pane and from the offer, the commands left to the person, who set one, and which sizes.
 echo "$report" | grep -qF "ペインから 4 回 ・ 提案から 1 回" && echo "$report" | grep -qF "本人の Enter 待ち）1 回 ・ 設定した人 1 人 / 2 人" && echo "$report" | grep -qF "大きさ別: 200k 1 回 ・ 300k 3 回 ・ 標準 1 回" || { echo "ledger-report.sh: the auto-compact timing section is not as expected" >&2; exit 1; }
 # The same person twice (weekly exports overlap) is refused, not counted twice.

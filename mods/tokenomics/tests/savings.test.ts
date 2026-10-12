@@ -1069,8 +1069,8 @@ test('what was not cut is not counted as spared: observe keeps its figures apart
   const calls = engine(on, { tmp: TMP })
   on('tool.call', () => bash(log()))
   await $.session.start(START)
-  // Not a whole test run, which the steering would note as well.
-  await callBash($, 'a', 'cat build.log')
+  // Not a whole test run or a log file, which the steering would note as well.
+  await callBash($, 'a', 'cat build.out')
 
   const ledger = await ledgerOf($, calls)
   expect(count(ledger, 'A1:would:observe')).toBe(1)
