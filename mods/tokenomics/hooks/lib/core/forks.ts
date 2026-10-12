@@ -18,6 +18,8 @@ export type ForkRun = {
     isReader: boolean
     /** The main conversation's turn it ended in. */
     turn: number
+    /** What the run itself cost on the input side, in millionths of a dollar at list prices (null when not known): a run costs a few thousandths. */
+    microUsd?: number | null
   }
 }
 
@@ -25,7 +27,16 @@ export type ForkRun = {
 export const MAX_FORKS = 24
 
 /** What a run kept out of the conversation, once its kind is known. */
-export type ForkOutcome = { name: string; readTokens: number; reportTokens: number; keptTokens: number }
+export type ForkOutcome = {
+  name: string
+  readTokens: number
+  reportTokens: number
+  keptTokens: number
+  /** What the run itself cost (millionths of a dollar, input side), or null. */
+  runMicroUsd: number | null
+  /** The report was as large as what the run read: nothing was kept out, and the run was paid for. */
+  isLoss: boolean
+}
 
 const SKILLS: readonly string[] = ['scout', 'test-summary', 'log-digest']
 const AGENTS = /^tokenomics:(?:scout|test-runner|log-digest)$/
@@ -61,7 +72,10 @@ export const forkRead = (run: ForkRun | undefined, tokens: number): ForkRun => (
 })
 
 /** The run with its end noted. */
-export const forkEnded = (run: ForkRun | undefined, ended: { reportTokens: number; spent: number | null; isReader: boolean; turn: number }): ForkRun => ({
+export const forkEnded = (
+  run: ForkRun | undefined,
+  ended: { reportTokens: number; spent: number | null; isReader: boolean; turn: number; microUsd?: number | null },
+): ForkRun => ({
   ...(run ?? blank),
   ended: { ...ended, reportTokens: Math.max(0, Math.round(ended.reportTokens)) },
 })
@@ -85,5 +99,12 @@ export const forkOutcome = (run: ForkRun, type: string): ForkOutcome | null => {
   if (name === null || run.ended === undefined) return null
   const keptTokens = Math.max(0, run.readTokens - run.ended.reportTokens)
 
-  return { name, readTokens: run.readTokens, reportTokens: run.ended.reportTokens, keptTokens }
+  return {
+    name,
+    readTokens: run.readTokens,
+    reportTokens: run.ended.reportTokens,
+    keptTokens,
+    runMicroUsd: run.ended.microUsd ?? null,
+    isLoss: run.ended.reportTokens >= run.readTokens,
+  }
 }

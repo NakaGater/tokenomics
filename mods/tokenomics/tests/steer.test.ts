@@ -1,7 +1,22 @@
 import { type Engine, describe, expect, test } from 'claude-code/testing'
 
 import { parseLedger } from '../hooks/lib/core/ledger'
-import { GAP_TURNS, SEARCH_AT, callKind, callKey, freshSteer, lightUse, steerAnswered, steerNote, steerStep, steerTurn } from '../hooks/lib/core/steer'
+import {
+  GAP_TURNS,
+  MAX_GAP_TURNS,
+  SEARCH_AT,
+  callKind,
+  callKey,
+  delegationPays,
+  freshSteer,
+  isBashEdit,
+  lightUse,
+  steerAnswered,
+  steerNote,
+  steerSeen,
+  steerStep,
+  steerTurn,
+} from '../hooks/lib/core/steer'
 
 import { type Calls, engine } from './kit'
 
@@ -114,9 +129,10 @@ describe('when a call is turned back', () => {
 
   test('a turn starts the count over', () => {
     let s = freshSteer()
-    for (let i = 1; i < SEARCH_AT; i += 1) s = steerStep(s, 'Bash', grep(i), 1).next
+    for (let i = 1; i < SEARCH_AT; i += 1) s = steerSeen(steerStep(s, 'Bash', grep(i), 1).next, 900)
     s = steerTurn(s)
     expect(steerStep(s, 'Bash', grep(9), 2).say).toBe('pass')
+    expect(s).toMatchObject({ searches: 0, searchTokens: 0, searchSeen: 0 })
   })
 
   test('an edit earlier in the turn means the model is working on what it found: not turned back', () => {
@@ -146,15 +162,66 @@ describe('when a call is turned back', () => {
     expect(later.say).toBe('refuse')
   })
 
-  test('making the same call again runs it, and that kind is then left alone for the session', () => {
+  test('making the same call again runs it, and that kind is then left alone for the rest of the turn', () => {
     const first = steerStep(freshSteer(), 'Bash', bashCall('bun test'), 1)
     const again = steerStep(first.next, 'Bash', bashCall('bun  test'), 1)
     expect(again).toMatchObject({ say: 'insist', kind: 'test' })
-    const much = steerStep(again.next, 'Bash', bashCall('bun test'), 1 + GAP_TURNS * 5)
-    expect(much.say).toBe('pass')
+    expect(steerStep(again.next, 'Bash', bashCall('npm test'), 1).say).toBe('pass')
     // The other kind is not given up.
     const s = run()
     expect(s.say).toBe('refuse')
+  })
+
+  test('a new turn clears the insistence, but the wait before the kind is asked again doubles each time the model insists', () => {
+    let s = steerStep(freshSteer(), 'Bash', bashCall('bun test'), 1).next
+    s = steerStep(s, 'Bash', bashCall('bun test'), 1).next
+    s = steerTurn(s)
+    expect(s.insisted).toEqual([])
+    expect(steerStep(s, 'Bash', bashCall('npm test'), 1 + GAP_TURNS * 2 - 1).say).toBe('pass')
+    const second = steerStep(s, 'Bash', bashCall('npm test'), 1 + GAP_TURNS * 2)
+    expect(second.say).toBe('refuse')
+    // Insisted on again: the wait doubles again.
+    const again = steerStep(second.next, 'Bash', bashCall('npm test'), 1 + GAP_TURNS * 2)
+    expect(again.say).toBe('insist')
+    const t = steerTurn(again.next)
+    expect(steerStep(t, 'Bash', bashCall('npm test'), 1 + GAP_TURNS * 2 + GAP_TURNS * 4 - 1).say).toBe('pass')
+    expect(steerStep(t, 'Bash', bashCall('npm test'), 1 + GAP_TURNS * 2 + GAP_TURNS * 4).say).toBe('refuse')
+    // And it stops growing at a limit.
+    const many = { ...freshSteer(), insists: { test: 20 }, lastAt: { test: 1 } }
+    expect(steerStep(many, 'Bash', bashCall('npm test'), 1 + MAX_GAP_TURNS - 1).say).toBe('pass')
+    expect(steerStep(many, 'Bash', bashCall('npm test'), 1 + MAX_GAP_TURNS).say).toBe('refuse')
+  })
+
+  test('a search that would not pay for a hand-over is not turned back, whatever its number', () => {
+    let s = freshSteer()
+    for (let i = 1; i < SEARCH_AT; i += 1) s = steerSeen(steerStep(s, 'Bash', grep(i), 1, false, 'claude-sonnet-5-5').next, 150)
+    const third = steerStep(s, 'Bash', grep(SEARCH_AT), 1, false, 'claude-sonnet-5-5')
+    expect(third.say).toBe('pass')
+    // The count goes on, so the next one is judged on more.
+    expect(third.next.searches).toBe(SEARCH_AT)
+  })
+
+  test('a search is turned back when what the turn has read from searches is large enough', () => {
+    let s = freshSteer()
+    for (let i = 1; i < SEARCH_AT; i += 1) s = steerSeen(steerStep(s, 'Bash', grep(i), 1, false, 'claude-sonnet-5-5').next, 1500)
+    expect(steerStep(s, 'Bash', grep(SEARCH_AT), 1, false, 'claude-sonnet-5-5').say).toBe('refuse')
+  })
+
+  test('an edit through the shell is an edit', () => {
+    let s = steerStep(freshSteer(), 'Bash', bashCall("python3 - <<'EOF'\np='src/a.ts'\nopen(p,'w').write('x')\nEOF"), 1).next
+    expect(s.hasEdited).toBe(true)
+    for (let i = 1; i <= SEARCH_AT + 2; i += 1) {
+      const v = steerStep(s, 'Bash', grep(i), 1)
+      expect(v.say).toBe('pass')
+      s = v.next
+    }
+  })
+
+  test('a log written to scratch is no edit, and the searches after it are still counted', () => {
+    let s = steerStep(freshSteer(), 'Bash', bashCall('scripts/check-all.sh > /private/tmp/x/check.log 2>&1'), 1).next
+    expect(s.hasEdited).toBe(false)
+    for (let i = 1; i < SEARCH_AT; i += 1) s = steerStep(s, 'Bash', grep(i), 1).next
+    expect(steerStep(s, 'Bash', grep(SEARCH_AT), 1).say).toBe('refuse')
   })
 
   test('when only watching, a repeat is no insistence and the kind is not given up', () => {
@@ -184,6 +251,98 @@ describe('when a call is turned back', () => {
     expect(steerNote('test', 0)).toContain('tokenomics:test-summary')
     expect(steerNote('test', 0)).toContain('same call again')
   })
+
+  test('the search note says how big the conversation is that every further search sends again', () => {
+    expect(steerNote('search', 3, 110_400)).toContain('about 110k tokens')
+    expect(steerNote('search', 3, 110_400)).toContain('tokenomics:scout')
+    // Unknown, or too small to matter: said nothing of.
+    expect(steerNote('search', 3, null)).not.toContain('tokens)')
+    expect(steerNote('search', 3, 400)).not.toContain('about 0k')
+    expect(steerNote('test', 0, 110_400)).not.toContain('110k')
+  })
+})
+
+describe('whether turning a search back pays', () => {
+  const seen = (...tokens: number[]) => tokens.reduce((s, t) => steerSeen(s, t), freshSteer())
+
+  test('with nothing measured there is no reason to hold back', () => {
+    expect(delegationPays(freshSteer(), 'claude-sonnet-5-5')).toBe(true)
+  })
+
+  test('small results do not pay, large ones do', () => {
+    expect(delegationPays(seen(200, 300), 'claude-sonnet-5-5')).toBe(false)
+    expect(delegationPays(seen(1500, 2500), 'claude-sonnet-5-5')).toBe(true)
+  })
+
+  test('the dearer the conversation’s model, the sooner it pays: 500 tokens a search is under the line on sonnet, over it on opus, far under it on haiku', () => {
+    const s = seen(500, 500)
+    expect(delegationPays(s, 'claude-sonnet-5-5')).toBe(false)
+    expect(delegationPays(s, 'claude-opus-5-5')).toBe(true)
+    expect(delegationPays(s, 'claude-haiku-5-5')).toBe(false)
+    // A model not in the list is priced as sonnet.
+    expect(delegationPays(s, 'something-else')).toBe(false)
+    expect(delegationPays(seen(1500, 1500), undefined)).toBe(true)
+  })
+
+  test('it is the average search that counts, not the number of them', () => {
+    expect(delegationPays(seen(900, 100, 100, 100), 'claude-sonnet-5-5')).toBe(false)
+    expect(delegationPays(seen(900, 900), 'claude-sonnet-5-5')).toBe(true)
+  })
+
+  test('a result is counted whole numbers, and never below nothing', () => {
+    expect(seen(-5).searchTokens).toBe(0)
+    expect(seen(2.6).searchTokens).toBe(3)
+  })
+})
+
+describe('what counts as a change to the work through the shell', () => {
+  test('writes into the work', () => {
+    for (const c of [
+      "sed -i 's/a/b/' src/a.ts",
+      "sed -i.bak 's/a/b/' src/a.ts",
+      "perl -pi -e 's/a/b/' src/a.ts",
+      'git apply fix.patch',
+      'patch -p1 < fix.diff',
+      'echo x >> README.md',
+      'echo x > src/a.ts',
+      'echo x > "src/a b.ts"',
+      'printf x | tee src/a.ts',
+      "cat > src/a.ts <<'EOF'\nx\nEOF",
+      "python3 - <<'EOF'\np='hooks/register.tsx'\ns=open(p).read()\nopen(p,'w').write(s)\nEOF",
+      `python3 -c "open('src/a.py','w').write('x')"`,
+      "python3 - <<'EOF'\nfrom pathlib import Path\nPath('docs/a.md').write_text('x')\nEOF",
+      `node -e "require('fs').writeFileSync('src/a.js','x')"`,
+      // A path that cannot be told is taken for the work.
+      "cd /repo && python3 - <<'EOF'\ndef edit(p, s):\n    open(p, 'w').write(s)\nEOF",
+    ]) {
+      expect(isBashEdit(c), c).toBe(true)
+    }
+  })
+
+  test('not writes into the work: logs under scratch, the null device, the error stream, reading, comparisons inside a script', () => {
+    for (const c of [
+      'scripts/check-all.sh > /private/tmp/claude-501/x/check.log 2>&1',
+      'scripts/check-all.sh >/dev/null 2>&1; echo "exit=$?"',
+      'S=/private/tmp/claude-501/x; scripts/check-all.sh > $S/check.log 2>&1',
+      'scripts/check-all.sh > "$LOG" 2>&1',
+      'scripts/check-all.sh > "/tmp/check.log" 2>&1',
+      'bun test 2>&1 | tail -20',
+      'bun test 2>err.log',
+      'grep -n "a>b" src/a.ts',
+      "echo 'a > b'",
+      'ls > /tmp/x.txt',
+      'ls | tee /private/tmp/x.txt',
+      "python3 - <<'EOF'\nimport json\nn = 3\nif n > 2:\n    print(json.load(open('a.json')))\nEOF",
+      "python3 - <<'EOF'\nopen('/private/tmp/claude-501/x/out.json','w').write('x')\nEOF",
+      "python3 - <<'EOF'\nout='/var/folders/zz/T/x.txt'\nopen(out,'w').write('x')\nEOF",
+      'sed -n 1,5p src/a.ts',
+      'sed -E "s/a/b/" src/a.ts',
+      'git status && git diff --stat',
+      'cat src/a.ts | grep x',
+    ]) {
+      expect(isBashEdit(c), c).toBe(false)
+    }
+  })
 })
 
 type Driver = Engine
@@ -194,7 +353,13 @@ const grepLine = (n: number) => `grep -rn needle${n} src`
 const callBash = ($: Driver, id: string, command: string, agentId?: string) =>
   $.tool.call({ tool: 'Bash', tool_use_id: id, command, ...(agentId === undefined ? {} : { agentId }) } as never) as unknown as Promise<Out>
 
-const reply = () => ({ result: { stdout: 'ok', stderr: '', interrupted: false, isImage: false, noOutputExpected: false }, text: 'ok', isReadOnly: true, ref: 1 }) as never
+const reply = (chars = 0) => {
+  const text = chars === 0 ? 'ok' : 'x'.repeat(chars)
+  return { result: { stdout: text, stderr: '', interrupted: false, isImage: false, noOutputExpected: false }, text, isReadOnly: true, ref: 1 } as never
+}
+
+// A search result of 3,000 characters is about 1,000 tokens: enough, from two searches, for a hand-over to pay.
+const BIG = 3000
 
 const ledgerOf = async ($: Driver, calls: Calls) => {
   await $.session.end({ reason: 'exit' } as never)
@@ -212,7 +377,7 @@ test('the third search of a turn is turned back with a note that names the skill
   let ran = 0
   on('tool.call', () => {
     ran += 1
-    return reply()
+    return reply(BIG)
   })
   await $.session.start(START)
   await turn($)
@@ -226,7 +391,7 @@ test('the third search of a turn is turned back with a note that names the skill
   expect(count(ledger, 'B6:fired:auto:search')).toBe(1)
 })
 
-test('the same call made again runs, is counted as insisted on, and that kind is not turned back again', AUTO, async ($, on) => {
+test('the same call made again runs and is counted as insisted on; the kind is asked again only after a longer wait', AUTO, async ($, on) => {
   const calls = engine(on)
   on('tool.call', () => reply())
   await $.session.start(START)
@@ -237,13 +402,21 @@ test('the same call made again runs, is counted as insisted on, and that kind is
   const again = await callBash($, 'b2', 'bun test')
   expect(again.deny).toBeUndefined()
   expect(again.text).toBe('ok')
-  for (let i = 0; i < 6; i += 1) {
-    await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
-    await turn($)
+  // The rest of that turn it is left alone.
+  expect((await callBash($, 'b2b', 'npm test')).deny).toBeUndefined()
+  const next = async (n: number) => {
+    for (let i = 0; i < n; i += 1) {
+      await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+      await turn($)
+    }
   }
+  // After the usual wait it is still left alone, for the model insisted: the wait doubled.
+  await next(GAP_TURNS)
   expect((await callBash($, 'b3', 'npm test')).deny).toBeUndefined()
+  await next(GAP_TURNS)
+  expect((await callBash($, 'b4', 'npm test')).deny).toContain('tokenomics:test-summary')
   const ledger = await ledgerOf($, calls)
-  expect(count(ledger, 'B6:fired:auto:test')).toBe(1)
+  expect(count(ledger, 'B6:fired:auto:test')).toBe(2)
   expect(count(ledger, 'B6:outcome:auto:insisted_test')).toBe(1)
 })
 
@@ -326,7 +499,7 @@ test('an edit in the turn, searches after it run', AUTO, async ($, on) => {
 
 test('by default it only watches: nothing is turned back, and the ledger says what would have been', async ($, on) => {
   const calls = engine(on)
-  on('tool.call', () => reply())
+  on('tool.call', () => reply(BIG))
   await $.session.start(START)
   await turn($)
 
@@ -351,7 +524,7 @@ test('off does nothing, not even a note', { options: { digest: 'off', steer: 'of
 
 test('a person held back from the savings is never turned back', { options: { digest: 'off', steer: 'auto', holdoutPercent: 100 } }, async ($, on) => {
   const calls = engine(on)
-  on('tool.call', () => reply())
+  on('tool.call', () => reply(BIG))
   await $.session.start(START)
   await turn($)
 
@@ -374,4 +547,38 @@ test('a new turn starts the count of searches over', AUTO, async ($, on) => {
   await turn($)
   expect((await callBash($, 'j3', grepLine(3))).deny).toBeUndefined()
   expect((await callBash($, 'j4', grepLine(4))).deny).toBeUndefined()
+})
+
+
+test('small searches are not turned back: a hand-over would not pay', AUTO, async ($, on) => {
+  const calls = engine(on)
+  on('tool.call', () => reply())
+  await $.session.start(START)
+  await turn($)
+
+  for (let i = 1; i <= 5; i += 1) expect((await callBash($, `k${i}`, grepLine(i))).deny).toBeUndefined()
+  const ledger = await ledgerOf($, calls)
+  expect(count(ledger, 'B6:fired:auto:search')).toBe(0)
+})
+
+test('a change made through the shell is an edit: the searches after it run', AUTO, async ($, on) => {
+  engine(on)
+  on('tool.call', () => reply(BIG))
+  await $.session.start(START)
+  await turn($)
+
+  await callBash($, 'l0', "python3 - <<'EOF'\np='src/a.ts'\nopen(p,'w').write('x')\nEOF")
+  for (let i = 1; i <= 5; i += 1) expect((await callBash($, `l${i}`, grepLine(i))).deny).toBeUndefined()
+})
+
+test('a log written to scratch is no edit: the third search is still turned back', AUTO, async ($, on) => {
+  engine(on)
+  on('tool.call', () => reply(BIG))
+  await $.session.start(START)
+  await turn($)
+
+  await callBash($, 'm0', 'scripts/check-all.sh > /private/tmp/x/check.log 2>&1')
+  expect((await callBash($, 'm1', grepLine(1))).deny).toBeUndefined()
+  expect((await callBash($, 'm2', grepLine(2))).deny).toBeUndefined()
+  expect((await callBash($, 'm3', grepLine(3))).deny).toContain('tokenomics:scout')
 })

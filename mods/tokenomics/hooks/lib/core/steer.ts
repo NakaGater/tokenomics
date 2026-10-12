@@ -4,32 +4,77 @@
  * the same call. Pure: what the hook remembers lives in `SteerState`, and every step returns the next one.
  */
 
+import { ASSUMED_TURNS_AFTER, PRICES, keptOutUsd, modelFamily } from './economics'
+
 export type SteerKind = 'search' | 'test'
 
 /** The Nth search of a turn is the first one turned back: a quick lookup or two is cheap, an investigation is not. */
 export const SEARCH_AT = 3
-/** A kind is turned back again only this many turns after the last time. */
+/** A kind is turned back again only this many turns after the last time; it doubles with every time the model insisted. */
 export const GAP_TURNS = 3
+/** The longest that gap grows to. */
+export const MAX_GAP_TURNS = 24
 /** A skill used this soon after a call was turned back counts as the answer to it. */
 export const ANSWER_TURNS = 2
 
 export type SteerState = {
   /** Searches the main conversation has made in the running turn. */
   searches: number
+  /** What the results of the searches it has read in the running turn held, in tokens, and how many results that sums. */
+  searchTokens: number
+  searchSeen: number
   /** The main conversation has edited something in the running turn: it is working on what it found, not looking. */
   hasEdited: boolean
   /** The call turned back last, until a skill answers it or it goes unanswered. */
   refused: { kind: SteerKind; key: string; turn: number } | null
   /** The turn each kind was last turned back on. */
   lastAt: Partial<Record<SteerKind, number>>
-  /** Kinds the model has insisted on by making the same call again: not turned back again this session. */
+  /** Kinds the model has insisted on by making the same call again: not turned back again in that turn. */
   insisted: SteerKind[]
+  /** How many times the model insisted on each kind this session: the more, the longer before it is asked again. */
+  insists: Partial<Record<SteerKind, number>>
 }
 
-export const freshSteer = (): SteerState => ({ searches: 0, hasEdited: false, refused: null, lastAt: {}, insisted: [] })
+export const freshSteer = (): SteerState => ({ searches: 0, searchTokens: 0, searchSeen: 0, hasEdited: false, refused: null, lastAt: {}, insisted: [], insists: {} })
 
-/** A new turn begins: its counts start over; what was refused and what was insisted on stays. */
-export const steerTurn = (s: SteerState): SteerState => ({ ...s, searches: 0, hasEdited: false })
+/** A new turn begins: its counts start over, and so does what was insisted on (that was about the search in hand); what was refused stays. */
+export const steerTurn = (s: SteerState): SteerState => ({ ...s, searches: 0, searchTokens: 0, searchSeen: 0, hasEdited: false, insisted: [] })
+
+/** A search result the model read: what it held, in tokens. */
+export const steerSeen = (s: SteerState, tokens: number): SteerState => ({
+  ...s,
+  searchTokens: s.searchTokens + Math.max(0, Math.round(tokens)),
+  searchSeen: s.searchSeen + 1,
+})
+
+/**
+ * What handing the rest of an investigation to the scout costs, apart from what it reads: the report that comes back stays in the
+ * conversation, the scout's own run, and the model writing the question. Measured on this plugin's scout (2026-10-12): a run is
+ * $0.0008-0.0026 at list prices, the report 400-800 tokens (the agent is asked to keep it short). Output is priced as 5x input.
+ */
+export const REPORT_TOKENS = 450
+export const SCOUT_RUN_USD = 0.002
+const ASK_OUTPUT_TOKENS = 150
+const OUTPUT_TO_INPUT = 5
+/** Searches still to come in the turn that handing over now would spare: the guess is two. */
+const MORE_SEARCHES = 2
+
+/**
+ * Whether turning a search back pays. What the model has read from its searches this turn says what the next ones will bring; kept
+ * out of the conversation it is worth its price over the turns that follow (written once, read every turn), against what the
+ * hand-over costs. A request avoided is left out of this on purpose: a call turned back that the model repeats wastes one request,
+ * and a hand-over that is taken saves one, so at an even chance they cancel. With nothing measured there is no reason to hold back.
+ */
+export const delegationPays = (s: SteerState, model: string | undefined): boolean => {
+  if (s.searchSeen === 0) return true
+  const family = modelFamily(model) ?? 'sonnet'
+  const further = (s.searchTokens / s.searchSeen) * MORE_SEARCHES
+  const worth = keptOutUsd(further, family, ASSUMED_TURNS_AFTER) ?? 0
+  const overhead =
+    (keptOutUsd(REPORT_TOKENS, family, ASSUMED_TURNS_AFTER) ?? 0) + SCOUT_RUN_USD + (ASK_OUTPUT_TOKENS * OUTPUT_TO_INPUT * PRICES[family].input) / 1_000_000
+
+  return worth >= overhead
+}
 
 const EDITS: readonly string[] = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit']
 const LIGHT_SKILLS: readonly string[] = ['scout', 'test-summary', 'log-digest']
@@ -94,6 +139,91 @@ const isSuiteRun = (command: string): boolean => {
   return SUITES.some(r => r.test(words.join(' ')))
 }
 
+/** Where a command may write without touching the work: the null device and scratch space. */
+const SCRATCH = /^(?:\/dev\/|\/tmp\/|\/private\/(?:tmp|var)\/|\/var\/folders\/|\$\{?TMPDIR\}?\/)/
+
+/** The command without the bodies of its here-documents: the lines that are the shell's own. */
+const withoutHeredocs = (command: string): string => {
+  const kept: string[] = []
+  let end: string | null = null
+  for (const line of command.split('\n')) {
+    if (end !== null) {
+      if (line.trim() === end) end = null
+      continue
+    }
+    kept.push(line)
+    const m = /<<-?[ \t]*(['"]?)(\w+)\1/.exec(line)
+    if (m !== null && m[2] !== undefined && line[m.index - 1] !== '<') end = m[2]
+  }
+
+  return kept.join('\n')
+}
+
+/** What a shell variable the command sets itself stands for (`S=/private/tmp/x`), to see where a redirect goes. */
+const assignments = (shell: string): Map<string, string> => {
+  const vars = new Map<string, string>()
+  for (const m of shell.matchAll(/(?:^|[\s;&|])([A-Za-z_]\w*)=([^\s;&|]+)/g)) {
+    if (m[1] !== undefined && m[2] !== undefined && !vars.has(m[1])) vars.set(m[1], m[2].replace(/^['"]|['"]$/g, ''))
+  }
+
+  return vars
+}
+
+/** Whether a path a command writes to is scratch. A shell variable that is not set in the command is taken for a log's folder. */
+const isScratch = (path: string, vars: Map<string, string>): boolean => {
+  const clean = path.replace(/^['"]|['"]$/g, '')
+  const expanded = clean.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (whole, name: string) => vars.get(name) ?? whole)
+
+  return SCRATCH.test(expanded) || /^\$\{?\w+\}?(?:\/|$)/.test(expanded)
+}
+
+/** The files a script (Python, Node) opens for writing: the path as written, or null where it cannot be told. */
+const scriptWrites = (text: string): Array<string | null> => {
+  const named = (id: string): string | null => new RegExp(`\\b${id}\\s*=\\s*[fFrR]*(['"])(.*?)\\1`).exec(text)?.[2] ?? null
+  const out: Array<string | null> = []
+  for (const m of text.matchAll(/\bopen\(\s*(?:[fFrRbB]*(['"])(.*?)\1|([A-Za-z_]\w*))\s*,\s*(?:mode\s*=\s*)?['"][wax][bt+]*['"]/g)) {
+    out.push(m[2] ?? (m[3] === undefined ? null : named(m[3])))
+  }
+  for (const m of text.matchAll(/\bPath\(\s*(?:[fFrR]*(['"])(.*?)\1|([A-Za-z_]\w*))\s*\)\s*\.write_(?:text|bytes)\(/g)) {
+    out.push(m[2] ?? (m[3] === undefined ? null : named(m[3])))
+  }
+  if (!/\bPath\(/.test(text) && /\.write_(?:text|bytes)\(/.test(text)) out.push(null)
+  for (const m of text.matchAll(/\b(?:writeFile|appendFile)(?:Sync)?\(\s*(?:(['"`])(.*?)\1|([A-Za-z_]\w*))/g)) {
+    out.push(m[2] ?? (m[3] === undefined ? null : named(m[3])))
+  }
+
+  return out
+}
+
+/**
+ * Whether a shell command changes the work, which a model does as much through the shell as through the edit tools: an in-place
+ * `sed` or `perl`, `git apply`, `patch`, a redirect or `tee` into a file, a script that opens one for writing. Writes to scratch
+ * space (a log under /tmp, /dev/null) are not changes to the work, and neither is a redirect of the error stream alone.
+ */
+export const isBashEdit = (command: string): boolean => {
+  const shell = withoutHeredocs(command)
+    // A quoted word right after `>`, `>>` or `tee` is a path, not text: it stays. Other quoted text is taken out.
+    .replace(/(>>?[ \t]*|\btee[ \t]+(?:-[a-zA-Z]+[ \t]+)*)(["'])([^\s"']*)\2/g, '$1$3')
+    .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''")
+  const vars = assignments(shell)
+  const inTree = (path: string | null): boolean => path === null || !isScratch(path, vars)
+
+  if (/\bsed\b[^|;&\n]*?\s-(?:[a-zA-Z]*i[a-zA-Z.]*|-in-place\S*)(?:\s|$)/.test(shell)) return true
+  if (/\bperl\b[^|;&\n]*?\s-[a-zA-Z]*i[a-zA-Z.]*(?:\s|$)/.test(shell)) return true
+  if (/\bgit\s+apply\b/.test(shell) || /(?:^|[\s;&|])patch\s/.test(shell)) return true
+
+  for (const m of shell.matchAll(/(\S*?)>>?[ \t]*([^\s;|&<>()]*)/g)) {
+    const before = m[1] ?? ''
+    const target = m[2] ?? ''
+    // `2>&1` has no target; `2>log` and `&>log` are the error stream's.
+    if (target === '' || before.endsWith('&') || /^[02-9]$/.test(before)) continue
+    if (inTree(target)) return true
+  }
+  for (const m of shell.matchAll(/\btee\s+(?:-[a-zA-Z]+\s+)*([^\s;|&<>()]+)/g)) if (inTree(m[1] ?? null)) return true
+
+  return scriptWrites(command).some(inTree)
+}
+
 /** What a tool call is, for this measure: a search or a whole-suite test run, or neither. */
 export const callKind = (tool: string, input: Record<string, unknown>): SteerKind | null => {
   if (tool === 'Grep' || tool === 'Glob') return 'search'
@@ -119,10 +249,14 @@ export type SteerVerdict =
 
 /**
  * One main-conversation tool call, in the order they come. A subagent's calls never reach here. When only watching (`isDry`) the
- * call is never really turned back, so a repeat of it is no insistence.
+ * call is never really turned back, so a repeat of it is no insistence. `model` is the conversation's, to price what a hand-over
+ * would spare.
  */
-export const steerStep = (s: SteerState, tool: string, input: Record<string, unknown>, turn: number, isDry = false): SteerVerdict => {
-  if (EDITS.includes(tool)) return { say: 'pass', next: { ...s, hasEdited: true } }
+export const steerStep = (s: SteerState, tool: string, input: Record<string, unknown>, turn: number, isDry = false, model?: string): SteerVerdict => {
+  // A change to the work, through an edit tool or through the shell.
+  if (EDITS.includes(tool) || (tool === 'Bash' && typeof input.command === 'string' && isBashEdit(input.command))) {
+    return { say: 'pass', next: { ...s, hasEdited: true } }
+  }
   const kind = callKind(tool, input)
   if (kind === null) return { say: 'pass', next: s }
 
@@ -130,12 +264,15 @@ export const steerStep = (s: SteerState, tool: string, input: Record<string, unk
   const counted = kind === 'search' ? { ...s, searches: s.searches + 1 } : s
   if (!isDry && s.refused !== null && s.refused.key === key && turn - s.refused.turn <= ANSWER_TURNS) {
     const insisted = counted.insisted.includes(kind) ? counted.insisted : [...counted.insisted, kind]
-    return { say: 'insist', kind, next: { ...counted, refused: null, insisted } }
+    const insists = { ...counted.insists, [kind]: (counted.insists[kind] ?? 0) + 1 }
+    return { say: 'insist', kind, next: { ...counted, refused: null, insisted, insists } }
   }
   if (counted.insisted.includes(kind)) return { say: 'pass', next: counted }
-  if (kind === 'search' && (counted.searches < SEARCH_AT || counted.hasEdited)) return { say: 'pass', next: counted }
+  if (kind === 'search' && (counted.searches < SEARCH_AT || counted.hasEdited || !delegationPays(counted, model))) return { say: 'pass', next: counted }
   const last = counted.lastAt[kind]
-  if (last !== undefined && turn - last < GAP_TURNS) return { say: 'pass', next: counted }
+  // Every time the model insisted, the wait before it is asked again doubles.
+  const gap = Math.min(MAX_GAP_TURNS, GAP_TURNS * 2 ** (counted.insists[kind] ?? 0))
+  if (last !== undefined && turn - last < gap) return { say: 'pass', next: counted }
 
   return {
     say: 'refuse',
@@ -149,8 +286,18 @@ export const steerStep = (s: SteerState, tool: string, input: Record<string, unk
 export const steerAnswered = (s: SteerState, turn: number): { next: SteerState; kind: SteerKind | null } =>
   s.refused !== null && turn - s.refused.turn <= ANSWER_TURNS ? { next: { ...s, refused: null }, kind: s.refused.kind } : { next: s, kind: null }
 
-/** The note the model reads in place of the result. English, as the model's other instructions from this plugin are. */
-export const steerNote = (kind: SteerKind, searches: number): string =>
-  kind === 'search'
-    ? `tokenomics: this is search number ${searches} in this turn, and it was not run. If you are investigating (finding where something is defined or used, or how a part of the code works), call the Skill tool with skill "tokenomics:scout" and the question as args: a cheap agent does the searching and returns a short report with file paths, so the files stay out of your context. If you need these results yourself (you are about to edit this code, or need the exact text), make this same call again and it will run.`
-    : 'tokenomics: this runs the whole test suite, and it was not run. If you only need to know what failed, call the Skill tool with skill "tokenomics:test-summary" (args: the command, or nothing for the usual one): a cheap agent runs it and returns only the failures. If you need the full output, make this same call again and it will run.'
+/**
+ * The note the model reads in place of the result. English, as the model's other instructions from this plugin are. `contextTokens`
+ * is the conversation's size, so that the model knows what each further search costs it.
+ */
+export const steerNote = (kind: SteerKind, searches: number, contextTokens: number | null = null): string => {
+  if (kind === 'test') {
+    return 'tokenomics: this runs the whole test suite, and it was not run. If you only need to know what failed, call the Skill tool with skill "tokenomics:test-summary" (args: the command, or nothing for the usual one): a cheap agent runs it and returns only the failures. If you need the full output, make this same call again and it will run.'
+  }
+  const size =
+    contextTokens === null || contextTokens < 1000
+      ? ''
+      : ` Every search is another request that sends the whole conversation (about ${Math.round(contextTokens / 1000)}k tokens) again; the scout works in its own small context on a cheap model.`
+
+  return `tokenomics: this is search number ${searches} in this turn, and it was not run.${size} If you are investigating (finding where something is defined or used, or how a part of the code works), call the Skill tool with skill "tokenomics:scout" and the question as args: a cheap agent does the searching and returns a short report with file paths, so the files stay out of your context. If you need these results yourself (you are about to edit this code, or need the exact text), make this same call again and it will run.`
+}

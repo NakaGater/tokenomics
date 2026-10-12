@@ -11,6 +11,9 @@ export type Row = { label: string; value: string }
 
 const NONE = 'まだありません'
 
+/** Thousandths of a dollar as a signed amount: "約 $0.01", or "約 −$0.01" where the cost was the larger. */
+const signedUsd = (milli: number): string => `約 ${milli < 0 ? '−' : ''}${formatUsd(Math.abs(milli) / 1000)}`
+
 /**
  * What the savings layer has done today, in rows; nothing when it has done nothing yet. Dollars only off a subscription.
  * The digest's figure is a cut that happened (確定); the other is an estimate of the reading that work handed to a skill or
@@ -32,7 +35,11 @@ export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
       label: '今日の節約（推定）',
       value:
         `調べものやテストを ${s.forks} 回任せ、会話に入れずに済んだ読み込みは約 ${formatTokens(s.keptTokens)} tok（控えめな推定）` +
-        (isSubscription ? '' : `、見込み約 ${formatUsd(s.keptMilliUsd / 1000)}`) +
+        // The runs' own cost is set against it: a run is paid for even when it kept nothing out.
+        (isSubscription
+          ? ''
+          : `、見込み約 ${formatUsd(s.keptMilliUsd / 1000)}。任せた先の費用は約 ${formatUsd(s.forkCostMilliUsd / 1000)}（入力側）で、差し引き ${signedUsd(s.keptMilliUsd - s.forkCostMilliUsd)}`) +
+        (s.forkLosses > 0 ? `。報告が読んだ量以上で、得にならなかったのは ${s.forkLosses} 回` : '') +
         (s.forkReaders > 0 ? `。ファイルを読んだ ${s.forkReaders} 回のあと、会話側が同じファイルを読み直したのは ${s.forkRereads} 件` : ''),
     })
   }

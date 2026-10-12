@@ -74,6 +74,18 @@ export const keptOutUsd = (tokens: number, model: string | undefined, turns: num
   return family === null ? null : perMillion(tokens, priceOf(family, tokens).input) * contextFactor(turns, ttl)
 }
 
+/**
+ * What a response cost on the input side at list prices: fresh input, cache writes (priced as five-minute ones, which the usage does
+ * not tell apart from hour ones) and cache reads. Output is left out, as everywhere here; null for a model not in the list.
+ */
+export const usageInputUsd = (u: { input_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number; model: string }): number | null => {
+  const family = modelFamily(u.model)
+  if (family === null) return null
+  const p = priceOf(family, u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens)
+
+  return (u.input_tokens * p.input + u.cache_creation_input_tokens * p.write5m + u.cache_read_input_tokens * p.read) / 1_000_000
+}
+
 /** Turns assumed to follow a result when none is known; ledger figures name this guess. */
 export const ASSUMED_TURNS_AFTER = 30
 

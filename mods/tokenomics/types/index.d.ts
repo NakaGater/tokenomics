@@ -138,6 +138,9 @@ export type Savings = {
   keptMilliUsd: number
   forkReaders: number
   forkRereads: number
+  /** What the runs handed over cost on the input side (thousandths of a dollar, list prices), and how many gained nothing. */
+  forkCostMilliUsd: number
+  forkLosses: number
 }
 
 /** The /config Model row: what it holds now and the values it takes. */

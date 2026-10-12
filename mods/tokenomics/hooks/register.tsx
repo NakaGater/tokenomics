@@ -41,7 +41,7 @@ import {
 import { DEMO_MS, type CatState, type Demo, JUMP_STEPS, catView } from './lib/pace'
 import { DIGEST, digestOutput, digestPath, isDigestFile, isInsideDir, isNoteFile, normalizeCommand } from './lib/core/digest'
 import { decideSpawn, typeTag } from './lib/core/downgrade'
-import { ASSUMED_TURNS_AFTER, coldTurnUsd, heavyLevel, keptOutUsd, milliUsd, modelFamily, warmTurnUsd } from './lib/core/economics'
+import { ASSUMED_TURNS_AFTER, coldTurnUsd, heavyLevel, keptOutUsd, milliUsd, modelFamily, usageInputUsd, warmTurnUsd } from './lib/core/economics'
 import { forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId } from './lib/core/forks'
 import { shortHash } from './lib/core/hash'
 import { type Kind, type RawEvent, appendRaw, emptyLedger, digestThreshold, exportLedger, parseLedger, retiredNudges, savingsToday, sessionKey } from './lib/core/ledger'
@@ -50,7 +50,7 @@ import { type Candidate, DEMO_LINE, DEMO_SHORT, chooseNudge, nudgeLine, nudgeSho
 import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
 import { type MeasureId, armOf, failed, isTripped, modeOf, succeeded } from './lib/core/policy'
 import { freshState, resetConversation, resetSession, touch } from './lib/core/state'
-import { lightUse, steerAnswered, steerNote, steerStep, steerTurn } from './lib/core/steer'
+import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, steerTurn } from './lib/core/steer'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
 import { report } from './lib/status'
@@ -920,7 +920,7 @@ const PERSON_KEY = 'personId'
 const FLUSH_MS = 3_000
 const FLUSH_AT = 20
 
-const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 }
+const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 }
 const savings = atom({ plugin: 'tokenomics', key: 'savings' } as const, emptySavings)
 /** Tokens the output digest has kept out of the conversation today, as the band says them (see `svShow`). */
 let savedToday = 0
@@ -971,7 +971,7 @@ const svEnsure = ($: Dollar): Promise<void> => (svReady ??= svInit($))
 const svShow = async ($: Dollar): Promise<void> => {
   const today = savingsToday(sv.ledger, await $.clock.now())
   // A person held back from the savings (to be compared with the rest) is not shown an estimate of them either.
-  const next: Savings = sv.arm === 'control' ? { ...today, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 } : today
+  const next: Savings = sv.arm === 'control' ? { ...today, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 } : today
   const now = await read($, savings)
   if ((Object.keys(next) as (keyof Savings)[]).some(k => now[k] !== next[k])) {
     await update($, savings, () => next)
@@ -1192,9 +1192,12 @@ const svSettle = async ($: Dollar, id: string): Promise<void> => {
       readTokens: kept.readTokens,
       reportTokens: kept.reportTokens,
       keptMilliUsd: milliUsd(keptOutUsd(kept.keptTokens, sv.mainModel, ASSUMED_TURNS_AFTER)),
+      // What the run itself cost, against what it kept out; a run whose report was as big as what it read kept nothing.
+      scoutMicroUsd: kept.runMicroUsd ?? 0,
     },
     true,
   )
+  if (kept.isLoss) await svRecord($, 'B1', m, 'outcome', `lost_${type ?? kept.name}`, undefined, true)
 }
 
 /** Every run that ended and was never named is settled as it is. */
@@ -1239,7 +1242,9 @@ const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | u
         const isReader = (sv.agentReads.get(agentId)?.size ?? 0) > 0
         if (isReader) sv.agentDone.set(agentId, sv.turnIndex)
         const spent = usage === undefined ? null : usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
-        sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex }))
+        const runUsd = usage === undefined ? null : usageInputUsd(usage)
+        const microUsd = runUsd === null ? null : Math.round(runUsd * 1_000_000)
+        sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex, microUsd }))
         // Named already (spawned as a kind): settled now. A skill's fork is named when the Skill call returns, which is after this.
         if (sv.spawns.has(agentId)) await svAttempt($, 'B1', () => svSettle($, agentId), undefined)
         return
@@ -1380,13 +1385,13 @@ const svSteer = ($: Dollar, tool: string, input: Record<string, unknown>, agentI
       const m = modeFor('B6')
       if (m === 'off') return undefined
       if (lightUse(tool, input) !== null) return undefined
-      const verdict = steerStep(sv.steer, tool, input, sv.turnIndex, m !== 'auto')
+      const verdict = steerStep(sv.steer, tool, input, sv.turnIndex, m !== 'auto', sv.mainModel)
       sv.steer = verdict.next
       if (verdict.say === 'insist') await svRecord($, 'B6', m, 'outcome', `insisted_${verdict.kind}`)
       if (verdict.say !== 'refuse') return undefined
       await svRecord($, 'B6', m, m === 'auto' ? 'fired' : 'would', verdict.kind, { searches: verdict.searches })
 
-      return m === 'auto' ? steerNote(verdict.kind, verdict.searches) : undefined
+      return m === 'auto' ? steerNote(verdict.kind, verdict.searches, sv.contextTokens) : undefined
     },
     undefined,
   )
@@ -1688,6 +1693,10 @@ export const register: Register = (on, options) => {
     // What a subagent's tool results held is what its report spares the conversation (lib/core/forks).
     if (e.agentId !== undefined && ran.deny === undefined && typeof ran.text === 'string') {
       sv.forks = forkSet(sv.forks, e.agentId, forkRead(sv.forks.get(e.agentId), estimateTokens(ran.text)))
+    }
+    // What a search handed the conversation, for judging whether the next ones are worth handing over (lib/core/steer).
+    if (e.agentId === undefined && ran.deny === undefined && typeof ran.text === 'string' && callKind(String(e.tool), e as unknown as Record<string, unknown>) === 'search') {
+      sv.steer = steerSeen(sv.steer, estimateTokens(ran.text))
     }
     if (e.agentId !== undefined || ran.deny !== undefined) return ran
 

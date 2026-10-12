@@ -1076,7 +1076,7 @@ test('what was not cut is not counted as spared: observe keeps its figures apart
   expect(count(ledger, 'A1:would:observe')).toBe(1)
   expect(sum(ledger, 'A1:savedTokens')).toBe(0)
   expect(sum(ledger, 'A1:wouldTokens')).toBeGreaterThan(10_000)
-  expect(savingsToday(ledger, ledger.recent[0]!.t)).toEqual({ digests: 0, tokens: 0, milliUsd: 0, wouldFire: 1, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 })
+  expect(savingsToday(ledger, ledger.recent[0]!.t)).toEqual({ digests: 0, tokens: 0, milliUsd: 0, wouldFire: 1, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 })
 })
 
 test('a suggestion replaced by the next at the shortest gap, with nothing done in between, is counted as passed over', SUGGEST, async ($, on) => {

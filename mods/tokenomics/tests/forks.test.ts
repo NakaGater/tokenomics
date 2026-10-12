@@ -35,13 +35,18 @@ describe('what a run kept out of the conversation', () => {
 
   test('what its tool results held, less its report', () => {
     const run = forkEnded(forkRead(forkRead(undefined, 6_000), 4_000), ended)
-    expect(forkOutcome(run, 'fork_scout')).toEqual({ name: 'scout', readTokens: 10_000, reportTokens: 300, keptTokens: 9_700 })
+    expect(forkOutcome(run, 'fork_scout')).toEqual({ name: 'scout', readTokens: 10_000, reportTokens: 300, keptTokens: 9_700, runMicroUsd: null, isLoss: false })
+    expect(forkOutcome(forkEnded(forkRead(undefined, 10_000), { ...ended, microUsd: 1_250 }), 'fork_scout')?.runMicroUsd).toBe(1_250)
     expect(forkOutcome(run, 'tokenomics:scout')?.keptTokens).toBe(9_700)
   })
 
   test('never below nothing: a report longer than what was read keeps out zero', () => {
     const run = forkEnded(forkRead(undefined, 100), ended)
     expect(forkOutcome(run, 'fork_scout')?.keptTokens).toBe(0)
+    // And the run is told apart as one that gained nothing (a report as large as what it read is no gain either).
+    expect(forkOutcome(run, 'fork_scout')?.isLoss).toBe(true)
+    expect(forkOutcome(forkEnded(forkRead(undefined, 300), ended), 'fork_scout')?.isLoss).toBe(true)
+    expect(forkOutcome(forkEnded(forkRead(undefined, 301), ended), 'fork_scout')?.isLoss).toBe(false)
   })
 
   test('nothing until the run has ended, and nothing for a kind that is not the plugin’s', () => {
@@ -123,6 +128,9 @@ test('a skill’s fork ends before the Skill call returns: it is named then, and
   expect(sum(ledger, 'B1:reportTokens')).toBe(200)
   expect(sum(ledger, 'B1:keptTokens')).toBe(19_800)
   expect(sum(ledger, 'B1:keptMilliUsd')).toBeGreaterThan(0)
+  // What the run itself cost: its usage (100 fresh and 5,000 cache-read tokens on opus, 4 and 0.2 dollars a million) is $0.0014.
+  expect(sum(ledger, 'B1:scoutMicroUsd')).toBe(1_400)
+  expect(count(ledger, 'B1:outcome:observe:lost_fork_scout')).toBe(0)
   // The fork is a kind of its own, with what it spent and whether it read.
   expect(count(ledger, 'B1:signal:observe:fork_scout')).toBe(1)
   expect(sum(ledger, 'B1:spent')).toBe(200)
@@ -132,6 +140,23 @@ test('a skill’s fork ends before the Skill call returns: it is named then, and
   const written = JSON.stringify(calls.store.get('ledger:v1'))
   expect(written).not.toContain('/repo')
   expect(written).not.toContain('a.ts')
+})
+
+test('a run whose report is as large as what it read is paid for and counted as a loss, not as a gain', async ($, on) => {
+  const calls = engine(on)
+  on('tool.call', answers({ 'tokenomics:scout': 'f1' }, 90))
+  await $.session.start(START)
+  await mainEnds($, 'warm')
+
+  await read($, 'r1', '/repo/src/a.ts', 'f1')
+  await subEnds($, 'f1', REPORT)
+  await skill($, 's1', 'tokenomics:scout')
+  const ledger = await ledgerOf($, calls)
+
+  // 90 characters are 30 tokens, the report 200: nothing was kept out, and the run still cost.
+  expect(sum(ledger, 'B1:keptTokens')).toBe(0)
+  expect(sum(ledger, 'B1:scoutMicroUsd')).toBe(1_400)
+  expect(count(ledger, 'B1:outcome:observe:lost_fork_scout')).toBe(1)
 })
 
 test('a fork that was named before it ended is counted when it ends; the name without the plugin’s in front works too', async ($, on) => {

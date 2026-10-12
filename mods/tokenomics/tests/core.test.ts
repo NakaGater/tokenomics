@@ -41,7 +41,7 @@ const DAY = 86_400_000
 const round = (x: number | null, digits: number): number | null => (x === null ? null : Number(x.toFixed(digits)))
 const NOW = Date.UTC(2026, 9, 10, 12, 0, 0)
 /** A day with nothing saved. */
-const NOTHING: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0 }
+const NOTHING: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 }
 
 describe('options', () => {
   test('a manifest with nothing set gives the defaults', () => {
@@ -311,7 +311,7 @@ describe('ledger', () => {
   })
 
   test('what work handed to the plugin’s skills and agents kept out is summed apart from the digest’s, for its own kinds only', () => {
-    const kept = (tag: string): LedgerEvent => ({ kind: 'signal', measure: 'B1', mode: 'observe', arm: 'treat', tag, n: { keptTokens: 9_800, readTokens: 10_000, reportTokens: 200, keptMilliUsd: 300 } })
+    const kept = (tag: string): LedgerEvent => ({ kind: 'signal', measure: 'B1', mode: 'observe', arm: 'treat', tag, n: { keptTokens: 9_800, readTokens: 10_000, reportTokens: 200, keptMilliUsd: 300, scoutMicroUsd: 2_000 } })
     const note = (kind: 'signal' | 'outcome', tag: string): LedgerEvent => ({ kind, measure: 'B1', mode: 'observe', arm: 'treat', tag })
     let l: Ledger = emptyLedger
     l = append(l, fired, NOW, 's')
@@ -324,6 +324,8 @@ describe('ledger', () => {
     l = append(l, note('signal', 'readers_custom'), NOW + 3, 's')
     l = append(l, note('outcome', 'reread_fork_scout'), NOW + 4, 's')
     l = append(l, note('outcome', 'reread_Explore'), NOW + 4, 's')
+    l = append(l, note('outcome', 'lost_fork_scout'), NOW + 4, 's')
+    l = append(l, note('outcome', 'lost_Explore'), NOW + 4, 's')
     l = append(l, { kind: 'outcome', measure: 'A1', mode: 'auto', arm: 'treat', tag: 'readback' }, NOW + 4, 's')
     expect(savingsToday(l, NOW + 5)).toEqual({
       ...NOTHING,
@@ -336,6 +338,9 @@ describe('ledger', () => {
       keptMilliUsd: 600,
       forkReaders: 2,
       forkRereads: 1,
+      // The two runs of today cost 2 each; a run that gained nothing counts for the plugin's own kinds only.
+      forkCostMilliUsd: 4,
+      forkLosses: 1,
     })
   })
 })
@@ -364,9 +369,22 @@ describe('savings rows', () => {
     const rows = savingsRows({ ...handed, digests: 3, tokens: 21_000, milliUsd: 115, wouldFire: 2 }, false)
     expect(rows.map(r => r.label)).toEqual(['今日の節約（確定）', '今日の節約（推定）', '記録のみ'])
     expect(rows[0]!.value).toContain('約 21k tok')
-    expect(rows[1]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）、見込み約 $0.60')
+    expect(rows[1]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）、見込み約 $0.60。任せた先の費用は約 $0.00（入力側）で、差し引き 約 $0.60')
     expect(rows.some(r => r.value.includes('41k'))).toBe(false)
     expect(savingsRows(handed, true)[0]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）')
+  })
+
+  test('the runs’ own cost is set against what they kept out, and a run that gained nothing is counted', () => {
+    const [row] = savingsRows({ ...handed, forkCostMilliUsd: 150, forkLosses: 1 }, false)
+    expect(row!.value).toContain('任せた先の費用は約 $0.15（入力側）で、差し引き 約 $0.45')
+    expect(row!.value).toContain('報告が読んだ量以上で、得にならなかったのは 1 回')
+    // Where the cost was the larger, the balance says so.
+    expect(savingsRows({ ...handed, keptMilliUsd: 1, forkCostMilliUsd: 3 }, false)[0]!.value).toContain('差し引き 約 −$0.00')
+    expect(savingsRows({ ...handed, keptMilliUsd: 100, forkCostMilliUsd: 300 }, false)[0]!.value).toContain('差し引き 約 −$0.20')
+    // On a subscription there are no dollars, but a run that gained nothing is still told.
+    expect(savingsRows({ ...handed, forkCostMilliUsd: 150, forkLosses: 2 }, true)[0]!.value).toBe(
+      '調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）。報告が読んだ量以上で、得にならなかったのは 2 回',
+    )
   })
 
   test('with it, how often the conversation had to read the same files again', () => {

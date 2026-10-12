@@ -192,6 +192,8 @@ export const savingsToday = (ledger: Ledger, now: number): Savings => ({
   keptMilliUsd: sumOf(ledger, now, 1, 'B1:keptMilliUsd'),
   forkReaders: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'signal', 'readers_')),
   forkRereads: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'outcome', 'reread_')),
+  forkCostMilliUsd: sumOf(ledger, now, 1, 'B1:scoutMicroUsd') / 1000,
+  forkLosses: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'outcome', 'lost_')),
 })
 
 /** How a kind of suggestion has fared over the last two weeks: made, followed within a few turns, and left unanswered. */
