@@ -129,6 +129,8 @@ type EngineOptions = {
   autocompactCommand?: 'works' | 'ignored' | 'rejects'
   /** What the API reports for each model step the kit answers (read when the step is answered, so a test may change it between steps). */
   stepUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model: string }
+  /** The tool calls the API ran itself inside each model step the kit answers (the advisor), as the step's result lists them. */
+  serverToolUses?: { id: string; name: string; input: unknown; startedAt: number; endedAt?: number }[]
   /** More of what the breakdown lists: memory files, skills, MCP tools, agents, slash commands. */
   breakdownExtras?: Record<string, unknown>
   /** The conversation's own tokens, as the breakdown's Messages row says. */
@@ -392,6 +394,7 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
       index: e.index,
       answer: '',
       toolUses: [],
+      ...(options.serverToolUses === undefined ? {} : { serverToolUses: options.serverToolUses }),
       stopReason: 'end_turn' as const,
       usage: options.stepUsage ?? { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model },
     }

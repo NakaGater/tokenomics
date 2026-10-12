@@ -15,6 +15,7 @@ jq -s -r '
   | def n($p): [$c | to_entries[] | select(.key | startswith($p)) | .value] | add // 0;
     def sm($k): $s[$k] // 0;
     def nre($re): [$c | to_entries[] | select(.key | test($re)) | .value] | add // 0;
+    def smre($re): [$s | to_entries[] | select(.key | test($re)) | .value] | add // 0;
     def pct($a; $b): if $b == 0 then "-" else (((($a / $b) * 1000) | round) / 10 | tostring) + "%" end;
     def tok($x): if $x >= 1000000 then (($x / 100000 | round) / 10 | tostring) + "M" elif $x >= 1000 then (($x / 100 | round) / 10 | tostring) + "k" else ($x | tostring) end;
     def usd($m): "$" + ((($m / 10 | round) / 100 | tostring) | if test("^[0-9]+$") then . + ".00" elif test("\\.[0-9]$") then . + "0" else . end);
@@ -64,6 +65,25 @@ jq -s -r '
     "  設定された: ペインから \(nre("^S:signal:[a-z]+:window_pane_")) 回 ・ 提案から \(nre("^S:signal:[a-z]+:window_offer_")) 回 ・ 入力欄に入れた（自動で設定できず、本人の Enter 待ち）\(nre("^S:signal:[a-z]+:window_typed_")) 回 ・ 設定した人 \(map(select([.days[]? | (.counts // {}) | keys[] | select(test("^S:signal:[a-z]+:window_(pane|offer)_"))] | length > 0)) | length) 人 / \(length) 人",
     "  大きさ別: \(([$c | to_entries[] | .key | capture("^S:signal:[a-z]+:window_(pane|offer)_(?<t>[0-9]+k|auto)$") | .t] | unique | if length == 0 then ["（まだありません）"] else map("\(if . == "auto" then "標準" else . end) \(nre("^S:signal:[a-z]+:window_(pane|offer)_\(.)$")) 回") end) | join(" ・ "))",
     "  0.6.0 までの記録には、この欄の記録がありません（「まだありません」は、使われていないのではなく、記録されていないだけのことがあります）。設定した人は、1 ターンのプロンプトの平均が下がるので、下のアーム別の比較は割り引いて読んでください。",
+    "",
+    "【サブエージェントのトークン（確定: API が返した数字。記録は 0.6.3 から）】",
+    "  実行 \(nre("^S:signal:observe:sub_[a-z]+$")) 回（メインの会話の外で使われたトークン。どの種類のサブエージェントでも、委任の設定に関わらず数えます）",
+    (([$c | keys[] | capture("^S:signal:observe:sub_(?<f>[a-z]+)$") | .f] | unique) as $fams
+      | if ($fams | length) == 0 then "  （まだありません）"
+        else ($fams[] | . as $f | "  \($f): \($c["S:signal:observe:sub_\($f)"]) 回 ・ 入力 \(tok(sm("S:subIn_\($f)"))) ・ キャッシュ書き込み \(tok(sm("S:subWrite_\($f)"))) ・ キャッシュ読み \(tok(sm("S:subRead_\($f)"))) ・ 出力 \(tok(sm("S:subOut_\($f)"))) tok") end),
+    "  モデルの種類（family）ごとに分けています。値段が違うので、種類をまたいで足さないでください。上の【サブエージェント（B）】の「使ったトークン」は、種類が分かる実行だけ・キャッシュ読みを除いた別の数え方です（足さないでください）。",
+    "",
+    "【アドバイザー（推定）】",
+    "  呼び出し \($c["S:signal:observe:advisor"] // 0) 回（サブエージェントの中で \($c["S:signal:observe:advisor_sub"] // 0) 回）・ アドバイザーが読んだ会話（入力の推定）約 \(tok(sm("S:advIn"))) tok ・ 待ち時間の合計 \((sm("S:advMs") / 1000) | round) 秒",
+    "  推定の根拠: API は、アドバイザー自身のトークンをプラグインに渡しません。その回の要求の入力（メインの会話の大きさ）から見積もっています。この PC の 33 回では、アドバイザーの入力はその 1.00 倍（0.89〜1.01 倍）、毎回キャッシュなしで丸ごと読み直され、出力は 1 回 約 5〜10k tok（中央値 約 7.5k）でした。出力はプラグインからは見えません。",
+    "  メインの会話の数字にも、上のサブエージェントの数字にも足さないでください。",
+    "",
+    "【要約・/clear のあとに残すメモ（開いた回数は 0.6.3 から）】",
+    "  要約のメモ: 書いた \(n("S:signal:observe:compact_note_written")) ・ 一行で知らせた \(n("S:signal:observe:compact_pointer_given")) ・ 開かれた \(n("S:signal:observe:note_read_compaction")) 回（知らせた回数に対して \(pct(n("S:signal:observe:note_read_compaction"); n("S:signal:observe:compact_pointer_given")))）",
+    "  /clear のメモ: 書いた \(n("S:signal:observe:clear_note_written")) ・ 一行で知らせた \(n("S:signal:observe:clear_pointer_given")) ・ 開かれた \(n("S:signal:observe:note_read_clear")) 回（知らせた回数に対して \(pct(n("S:signal:observe:note_read_clear"); n("S:signal:observe:clear_pointer_given")))）",
+    "  /tokenomics handoff のメモ: 書いた \(n("S:signal:observe:fresh_note_written")) ・ 開かれた \(n("S:signal:observe:note_read_fresh")) 回 ・ 種類が分からないメモ（プラグインの再読み込みのあとなど）が開かれた \(n("S:signal:observe:note_read_other")) 回",
+    "  書かれてから開かれるまで 平均 \(per(sm("S:noteTurns"); n("S:signal:observe:note_read_compaction") + n("S:signal:observe:note_read_clear") + n("S:signal:observe:note_read_fresh"))) ターン後（種類をまとめて。0 は同じ返信の中）",
+    "  開いた回数は、Read ツールと cat・head・tail・less・sed -n で読んだ分だけです（python などで読んだ分は入りません）。1 つのメモは最初の 1 回だけ数えます。開かれた回数が少ないことは、メモが要らないことなのか、要約が足りていることなのかは、これだけでは分かりません。",
     "",
     "【アーム別の比較（人数が少ないうちは目安。別の人どうしの比較）】",
     (group_by(.arm // "?") | map(armLine) | .[]),

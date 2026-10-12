@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionContextBreakdown, SessionMessage, ToolCallResult, TurnUsage } from 'claude-code'
+import type { EngineInterface, Register, SessionContextBreakdown, SessionMessage, ToolCallResult, TurnStepResult, TurnUsage } from 'claude-code'
 
 import type { EffortSetting, Facts, HeavyItem, ModelRow, OfferKind, OpenOffer, RequestSize, Savings } from '../types'
 
@@ -51,6 +51,7 @@ import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
 import { type MeasureId, armOf, failed, isTripped, modeOf, succeeded } from './lib/core/policy'
 import { freshState, resetConversation, resetSession, touch } from './lib/core/state'
 import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, steerTurn } from './lib/core/steer'
+import { advisorMs, advisorRead, noteOpenedBy, noteWritten, subagentSpend } from './lib/core/spend'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
 import { report } from './lib/status'
@@ -441,6 +442,9 @@ const gitState = async ($: Dollar, leftMs = Infinity): Promise<string[]> => {
   }
 }
 
+/** The file name of a path: all the ledger and the notes' memory keep of where a note is. */
+const baseName = (path: string): string => path.slice(path.lastIndexOf('/') + 1)
+
 /** The note the latest compaction was preceded by, until the conversation that goes on has been told where it is. */
 let compactedNote: string | null = null
 
@@ -467,6 +471,7 @@ const prepareHandoff = async (
     await $.fs.write(path, text)
     if (!isPre) {
       compactedNote = path
+      sv.notes = noteWritten(sv.notes, baseName(path), { kind: 'compaction', turn: sv.turnIndex, isOpened: false })
       await update($, modes, x => ({ ...x, handoffs: x.handoffs + 1 }))
       await svRecord($, 'S', 'observe', 'signal', 'compact_note_written', { chars: text.length }, true)
     }
@@ -503,6 +508,7 @@ const svClearNote = async ($: Dollar, remainingMs: number): Promise<void> => {
     const text = buildHandoff(messages, new Date(now).toISOString(), 'clear')
     await $.fs.write(path, text)
     clearedNote = { path, text }
+    sv.notes = noteWritten(sv.notes, baseName(path), { kind: 'clear', turn: sv.turnIndex, isOpened: false })
     await svRecord($, 'S', 'observe', 'signal', 'clear_note_written', { chars: text.length }, true)
   } catch {
     await svRecord($, 'S', 'observe', 'signal', 'clear_note_failed', undefined, true)
@@ -549,7 +555,10 @@ const svHandoff = async ($: Dollar): Promise<string> => {
   try {
     const now = await $.clock.now()
     const path = handoffPath(sv.saveDir, now)
-    await $.fs.write(path, withGit(buildHandoff(await $.session.messages(), new Date(now).toISOString(), 'fresh'), await gitState($)))
+    const text = withGit(buildHandoff(await $.session.messages(), new Date(now).toISOString(), 'fresh'), await gitState($))
+    await $.fs.write(path, text)
+    sv.notes = noteWritten(sv.notes, baseName(path), { kind: 'fresh', turn: sv.turnIndex, isOpened: false })
+    await svRecord($, 'S', 'observe', 'signal', 'fresh_note_written', { chars: text.length }, true)
     return [`要点のメモを残しました: ${path}`, `/clear のあと、続きの会話の最初に「${path} を読んで、続きから進めて」と伝えてください。`].join('\n')
   } catch {
     return 'メモを残せませんでした。'
@@ -1000,7 +1009,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.2'
+const MOD_VERSION = '0.6.3'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1303,6 +1312,11 @@ const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | u
         const spent = usage === undefined ? null : usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
         const runUsd = usage === undefined ? null : usageInputUsd(usage)
         const microUsd = runUsd === null ? null : Math.round(runUsd * 1_000_000)
+        // Every subagent's run, whatever it is and whatever the delegation setting: its tokens by kind, in its model's family.
+        if (usage !== undefined) {
+          const used = subagentSpend(usage)
+          await svRecord($, 'S', 'observe', 'signal', used.tag, used.n, true)
+        }
         sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex, microUsd }))
         // Named already (spawned as a kind): settled now. A skill's fork is named when the Skill call returns, which is after this.
         if (sv.spawns.has(agentId)) await svAttempt($, 'B1', () => svSettle($, agentId), undefined)
@@ -1424,10 +1438,51 @@ const svExport = async ($: Dollar): Promise<string> => {
   return lines.join('\n')
 }
 
-/** A model step: the main conversation's model; and when the advisor was asked, how big the conversation it read again was. */
-const svStepped = async ($: Dollar, usedAdvisor: boolean): Promise<void> => {
-  if (usedAdvisor) await svRecord($, 'S', 'observe', 'signal', 'advisor', { ctx: sv.contextTokens ?? 0 })
+/**
+ * A model step in which the advisor was asked: each call is counted, with what it read again (`advIn`, an estimate from the
+ * step's own figures: the API keeps the advisor's tokens out of them, and its output is not told) and how long it took (`advMs`).
+ * A call in a subagent's loop is counted apart. Its own figures are the 推定 ones; they are never added to the exact ones.
+ */
+const svStepped = async ($: Dollar, agentId: string | undefined, step: TurnStepResult | undefined): Promise<void> => {
+  const calls = (step?.serverToolUses ?? []).filter(use => use.name === 'advisor')
+  if (calls.length === 0) return
+  const read = advisorRead(step?.usage, calls.length)
+  for (const call of calls) {
+    const ms = advisorMs(call)
+    const n = { ...(read === null ? {} : { advIn: read }), ...(ms === null ? {} : { advMs: ms }) }
+    await svRecord($, 'S', 'observe', 'signal', agentId === undefined ? 'advisor' : 'advisor_sub', Object.keys(n).length === 0 ? undefined : n)
+  }
 }
+
+/**
+ * After a call of the main conversation: a note this plugin wrote is opened (the Read tool, or a command that shows the file).
+ * Counted once per note, by kind, and how many turns after it was written; never where it is. A note this module did not write
+ * (it was reloaded since) counts when its place is the plugin's own folder.
+ */
+const svNoteOpened = ($: Dollar, tool: string, input: Record<string, unknown>, ran: ToolCallResult, agentId: string | undefined): Promise<void> =>
+  svAttempt(
+    $,
+    'C3',
+    async () => {
+      if (agentId !== undefined || ran.deny !== undefined || ran.isError === true) return
+      const opened = noteOpenedBy(tool, input)
+      if (opened === null) return
+      const known = sv.notes.get(opened.name)
+      if (known === undefined && !opened.isInTemp) return
+      if (known?.isOpened === true) return
+      sv.notes = noteWritten(sv.notes, opened.name, { kind: known?.kind ?? 'other', turn: known?.turn ?? sv.turnIndex, isOpened: true })
+      await svRecord(
+        $,
+        'S',
+        'observe',
+        'signal',
+        `note_read_${known?.kind ?? 'other'}`,
+        known === undefined ? undefined : { noteTurns: Math.max(0, sv.turnIndex - known.turn) },
+        true,
+      )
+    },
+    undefined,
+  )
 
 /**
  * B6: before a tool call of the main conversation. A search it keeps making, a whole test run or a read of a long log is turned back
@@ -1746,6 +1801,7 @@ export const register: Register = (on, options) => {
     }
     const raw = await next(e)
     await svLaunched($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
+    await svNoteOpened($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
     await svForkStarted($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
     // A large command output is cut down first, so what is counted below is what the model reads. A subagent's too.
     const ran = e.tool === 'Bash' && raw.deny === undefined ? await svAttempt($, 'A1', () => svDigestBash($, e.tool_use_id, e.command, raw, e.agentId), raw) : raw
@@ -1852,7 +1908,7 @@ export const register: Register = (on, options) => {
         isAdvisor: Array.isArray(step.serverToolUses) && step.serverToolUses.some(u => u.name === 'advisor'),
       })
     }
-    await svStepped($, Array.isArray(step?.serverToolUses) && step.serverToolUses.some(u => u.name === 'advisor'))
+    await svStepped($, e.agentId, step)
 
     return step
   }).catch(async function* ($, e, next) {

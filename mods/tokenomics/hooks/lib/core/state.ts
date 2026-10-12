@@ -6,6 +6,7 @@ import type { HeavyLevel } from './economics'
 import { type Ledger, type RawEvent, emptyLedger, sessionKey } from './ledger'
 import type { CoreOptions } from './options'
 import type { Arm, Breaker, MeasureId } from './policy'
+import type { KnownNote } from './spend'
 
 /**
  * What the savings layer remembers while the module is loaded. It is memory only: none of it is written out except as
@@ -69,6 +70,8 @@ export type CoreState = {
   steer: SteerState
   /** Saved outputs the model has already gone back for, so each is counted once however many pieces it reads. */
   readBack: Set<string>
+  /** The notes written this session by file name (never the path), to count a note's first opening (`spend.ts`). */
+  notes: Map<string, KnownNote>
 }
 
 export const freshState = (options: CoreOptions): CoreState => ({
@@ -106,6 +109,7 @@ export const freshState = (options: CoreOptions): CoreState => ({
   rereads: new Set(),
   steer: freshSteer(),
   readBack: new Set(),
+  notes: new Map(),
 })
 
 /** A new session: what belonged to the last conversation is forgotten. */
@@ -131,6 +135,7 @@ export const resetSession = (s: CoreState): void => {
   s.rereads.clear()
   s.steer = freshSteer()
   s.readBack.clear()
+  s.notes.clear()
 }
 
 /** `/clear`: the conversation is gone, the session goes on. */

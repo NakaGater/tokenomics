@@ -27,6 +27,8 @@ echo "$report" | grep -qF "任せた 4 回" && echo "$report" | grep -qF "控え
 echo "$report" | grep -qF "検索 4 → 2 ・ 1 ／ テスト 0 → 0 ・ 0 ／ ログ（0.6.2 から）0 → 0 ・ 0" || { echo "ledger-report.sh: the steering by kind is not as expected" >&2; exit 1; }
 # The auto-compact timing: sets from the pane and from the offer, the commands left to the person, who set one, and which sizes.
 echo "$report" | grep -qF "ペインから 4 回 ・ 提案から 1 回" && echo "$report" | grep -qF "本人の Enter 待ち）1 回 ・ 設定した人 1 人 / 2 人" && echo "$report" | grep -qF "大きさ別: 200k 1 回 ・ 300k 3 回 ・ 標準 1 回" || { echo "ledger-report.sh: the auto-compact timing section is not as expected" >&2; exit 1; }
+# Tokens outside the main conversation, by kind and by model family; the advisor's apart, as an estimate; the notes opened after a summary or a /clear.
+echo "$report" | grep -qF "haiku: 6 回 ・ 入力 600 ・ キャッシュ書き込み 12k ・ キャッシュ読み 180k ・ 出力 6k tok" && echo "$report" | grep -qF "呼び出し 3 回（サブエージェントの中で 1 回）・ アドバイザーが読んだ会話（入力の推定）約 400k tok" && echo "$report" | grep -qF "開かれた 1 回（知らせた回数に対して 20%）" && echo "$report" | grep -qF "書かれてから開かれるまで 平均 1.5 ターン後" || { echo "ledger-report.sh: the subagent, advisor and note sections are not as expected" >&2; exit 1; }
 # The same person twice (weekly exports overlap) is refused, not counted twice.
 if scripts/ledger-report.sh scripts/testdata/ledger-sample-a.json scripts/testdata/ledger-sample-a.json > /dev/null 2>&1; then
   echo "ledger-report.sh: one person in two files must be refused" >&2
