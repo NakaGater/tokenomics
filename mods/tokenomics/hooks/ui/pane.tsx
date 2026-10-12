@@ -7,10 +7,12 @@ import type { ActiveSaving, SavingKey } from '../lib/modes'
 import { OFFER_NAMES, type Offer } from '../lib/offers'
 import type { Demo } from '../lib/pace'
 import { NOTHING_TO_DO, statusRows } from '../lib/status'
+import { windowView } from '../lib/window'
 
 import { OfferView } from './offer'
 import { RequestChart } from './chart'
 import type { RasterElement, Ui } from './ui'
+import { WindowPicker } from './window'
 
 export type PaneProps = {
   ui: Ui
@@ -36,11 +38,17 @@ export type PaneProps = {
   hasCat: boolean
   /** Rows the pane has down. */
   rows: number
+  /** The auto-compact size the person stepped to, or null; and whether the mod is setting one. */
+  windowAsked: number | null
+  isSettingWindow: boolean
   onAccept: (offer: Offer) => void
   onMuteKind: (kind: OfferKind) => void
   onResume: (kind: OfferKind) => void
   onStop: (key: SavingKey) => void
   onRefresh: () => void
+  onWindowPick: (tokens: number) => void
+  onWindowApply: (tokens: number) => void
+  onWindowReset: () => void
   onCat: (demo: Demo) => void
   onClose: () => void
 }
@@ -80,6 +88,7 @@ const Heading = (p: { ui: Ui; children: string }) => {
 
 export const Pane = (p: PaneProps) => {
   const { Box, Text, Button } = p.ui
+  const autoSize = windowView(p.facts)
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -133,6 +142,20 @@ export const Pane = (p: PaneProps) => {
           </Box>
         ))}
       </Box>
+
+      {autoSize !== null && (
+        <WindowPicker
+          ui={p.ui}
+          isTerminal={p.Raster !== null}
+          facts={p.facts}
+          view={autoSize}
+          asked={p.windowAsked}
+          isBusy={p.isSettingWindow}
+          onPick={p.onWindowPick}
+          onApply={p.onWindowApply}
+          onReset={p.onWindowReset}
+        />
+      )}
 
       <Box flexDirection="column">
         <Heading ui={p.ui}>{`直近 ${RECENT_REQUESTS} 回のリクエスト`}</Heading>

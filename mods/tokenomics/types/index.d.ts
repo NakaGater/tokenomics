@@ -90,6 +90,8 @@ export type Facts = {
   autoCompactThreshold: number | null
   /** Who set that size (`auto`, `model-default`, `settings`, `env` ...), as the breakdown names it. */
   autoCompactSource: string | null
+  /** The size auto-compaction is counted against (`/autocompact`'s value, or the model's own window); a state kept from an older build lacks it. */
+  autoCompactWindow?: number | null
   /** The effort the main conversation's last model step asked for. */
   stepEffort: string | null
   /** The turn did something that usually ends a piece of work: a commit, a pull request, a change of folder. */
@@ -177,6 +179,10 @@ declare module 'claude-code' {
       savings: Savings
       /** The one-line suggestion made after the last reply, shown in the cat's card until the next prompt; null when none. */
       nudge: string | null
+      /** The auto-compact size the person has stepped to or set in the pane; null until they do (the recommended one is shown). */
+      windowPick: number | null
+      /** The mod is setting the auto-compact size, and the pane's buttons wait. */
+      isSettingWindow: boolean
     }
   }
 }

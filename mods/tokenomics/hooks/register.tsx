@@ -30,7 +30,7 @@ import { EFFORT_LABEL, MODEL_LABEL, type SavingKey, activeSavings, cappedEffort,
 import {
   OFFER_NAMES,
   type Offer,
-  WINDOW_COMMAND,
+  WINDOW_TOKENS,
   computeOffers,
   isEpisodeId,
   needsConversationSize,
@@ -54,6 +54,7 @@ import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, ste
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
 import { report } from './lib/status'
+import { commandArg, commandOf, startsAt, windowView } from './lib/window'
 import { WORKER, WORKER_DESCRIPTION, WORKER_PROMPT, WORKER_TOOLS } from './lib/worker'
 import { Band } from './ui/band'
 import { OfferView } from './ui/offer'
@@ -154,6 +155,8 @@ const openOffer = atom({ plugin: 'tokenomics', key: 'offer' } as const, null as 
 const seen = atom({ plugin: 'tokenomics', key: 'seen' } as const, [] as string[])
 const muted = atom({ plugin: 'tokenomics', key: 'muted' } as const, [] as OfferKind[])
 const nudge = atom({ plugin: 'tokenomics', key: 'nudge' } as const, null as string | null)
+const windowPick = atom({ plugin: 'tokenomics', key: 'windowPick' } as const, null as number | null)
+const isSettingWindow = atom({ plugin: 'tokenomics', key: 'isSettingWindow' } as const, false)
 
 /** Paints the cat's next frame and asks for the one after it, at the pace its speed calls for. */
 const stepCat = async ($: Dollar): Promise<void> => {
@@ -376,6 +379,7 @@ const refreshUsage = async ($: Dollar, withBreakdown: boolean): Promise<void> =>
         // Absent while auto-compaction is off.
         autoCompactThreshold: breakdown.autoCompactThreshold ?? null,
         autoCompactSource: breakdown.autocompactSource,
+        autoCompactWindow: breakdown.rawMaxTokens,
       }
       // What an empty session holds is what a response measured less the conversation: learned from the first one.
       return usage.context.tokens === undefined ? known : applyBaseline(known, usage.context.tokens, messages)
@@ -602,13 +606,60 @@ const startFresh = ($: Dollar): Promise<void> =>
     failed: '入力欄に /clear と入力すると、新しく始められます（今の会話は消えます）',
   })
 
-/** There is no call to set the auto-compact size, so the command is typed for the person to confirm. */
-const shortenWindow = ($: Dollar): Promise<void> =>
-  typeCommand($, WINDOW_COMMAND, {
-    draft: `入力欄に ${WINDOW_COMMAND} と入力して Enter を押すと、自動要約が早まります（モデルごとに保存されます）`,
-    filled: `Enter で ${WINDOW_COMMAND} を実行します（モデルごとに保存されます。戻すには /autocompact auto）`,
-    failed: `入力欄に ${WINDOW_COMMAND} と入力すると、自動要約が早まります`,
-  })
+/**
+ * Sets the auto-compact size (`/autocompact`, saved per model; "auto" is the model's own). There is no setting call for it, so the
+ * command is run as the person would run it, and the answer is the size the engine reports afterwards: where the run is refused or
+ * changes nothing, the command is typed for the person to confirm instead. A press on a button is the confirmation of the run;
+ * it is undone by `/autocompact auto`, which the pane's "標準に戻す" does.
+ */
+const setWindow = async ($: Dollar, tokens: number): Promise<void> => {
+  if (await read($, isSettingWindow)) return
+  const view = windowView(await read($, facts))
+  if (view === null) return
+  const arg = commandArg(view, tokens)
+  const command = commandOf(view, tokens)
+  const want = arg === 'auto' ? view.standard : tokens
+  await update($, isSettingWindow, () => true)
+  try {
+    let isRun = false
+    try {
+      await $.command.run({ command: 'autocompact', args: arg })
+      isRun = true
+    } catch {
+      // A build that keeps the command to the person: it is typed below.
+    }
+    if (isRun) {
+      await refreshUsage($, true)
+      const now = windowView(await read($, facts))
+      if (now !== null && now.current === want) {
+        // The thumb stays on the size just set; it starts on the recommended one only when the pane opens.
+        await update($, windowPick, () => tokens)
+        $.ui.toast(
+          say(
+            'good',
+            arg === 'auto'
+              ? `自動要約のタイミングを標準に戻しました（約${formatTokens(startsAt(now, now.current))} tok まで育ってから要約されます）`
+              : `自動要約のタイミングを ${formatTokens(tokens)} にしました（約${formatTokens(startsAt(now, now.current))} tok で要約が始まります。モデルごとに保存されます）`,
+          ),
+        )
+        return
+      }
+    }
+    await typeCommand($, command, {
+      draft: `入力欄に ${command} と入力して Enter を押すと、自動要約のタイミングが変わります（モデルごとに保存されます）`,
+      filled: `Enter で ${command} を実行します（モデルごとに保存されます。戻すには /autocompact auto）`,
+      failed: `入力欄に ${command} と入力すると、自動要約のタイミングが変わります`,
+    })
+  } finally {
+    await update($, isSettingWindow, () => false)
+  }
+}
+
+/** Back to the model's own size: `/autocompact auto`. */
+const resetWindow = async ($: Dollar): Promise<void> => {
+  const view = windowView(await read($, facts))
+  if (view !== null) await setWindow($, view.standard)
+}
 
 /** Registers the light helper; there is no unregistering, so `agent.offer` decides whether the model hears of it. */
 const registerWorker = async ($: Dollar): Promise<boolean> => {
@@ -762,7 +813,7 @@ const carryOut = async ($: Dollar, offer: Offer): Promise<void> => {
       await enableAutoCompact($)
       return
     case 'window':
-      await shortenWindow($)
+      await setWindow($, WINDOW_TOKENS)
       return
     case 'boundary':
       await startFresh($)
@@ -941,7 +992,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.5.0'
+const MOD_VERSION = '0.6.0'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -2050,11 +2101,16 @@ export const register: Register = (on, options) => {
       isCompacting: (await read($, busy)) === 'compact',
       hasCat: catSite !== null && !ctx.facts.isMotionReduced,
       rows: e.viewport?.rows ?? 24,
+      windowAsked: await read($, windowPick),
+      isSettingWindow: await read($, isSettingWindow),
       onAccept: offer => void acceptFromPane($, offer),
       onMuteKind: kind => void muteFromPane($, kind),
       onResume: kind => void resumeKind($, kind),
       onStop: key => void stopSaving($, key),
       onRefresh: () => void refreshUsage($, true),
+      onWindowPick: tokens => void update($, windowPick, () => tokens),
+      onWindowApply: tokens => void setWindow($, tokens),
+      onWindowReset: () => void resetWindow($),
       onCat: demo => peekCat($, demo),
       onClose: () => void $.ui.close({ id: PANE }),
     })

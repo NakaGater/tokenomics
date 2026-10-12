@@ -52,6 +52,7 @@ export const initialFacts: Facts = {
   hasGrown: false,
   autoCompactThreshold: null,
   autoCompactSource: null,
+  autoCompactWindow: null,
   stepEffort: null,
   boundary: null,
   isAutoCompactEnabled: null,

@@ -4,6 +4,7 @@ import type { Advice } from './advice'
 import { sessionOf } from './facts'
 import { bar, clockLabel, exactTokens, formatTokens, formatUsd, limitLabel, promptTokens, promptsOf } from './format'
 import { type Fill, fillOf } from './gauge'
+import { stakeOf, stakeText } from './stake'
 import { FACE, moodForLevel } from './mascot'
 import type { Offer } from './offers'
 
@@ -73,6 +74,10 @@ export const statusRows = (f: Facts, savings?: Savings): Row[] => {
     label: 'コンテキスト',
     value: f.contextPercent === null ? NONE : `${bar(fill.percent)} ${fill.percent}%${fillNote(f, fill)}`,
   })
+
+  // What carrying the conversation costs on every request, and what a summary would change: the reason to summarise, in numbers.
+  const stake = stakeOf(f)
+  if (stake !== null) rows.push({ label: '毎回の読み直し', value: stakeText(stake) })
 
   // The last turn as the API counted it, in full, so that it can be priced: the prompt in the three kinds that are billed apart,
   // and the output. A turn is several requests (each tool call is followed by another), every one sending the whole conversation,

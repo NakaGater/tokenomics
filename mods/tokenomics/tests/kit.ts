@@ -88,6 +88,8 @@ export type Calls = {
   copied: string[]
   /** While true there is no clipboard to put anything on. */
   isCopyBroken: boolean
+  /** The `/autocompact` runs the mod made, in order. */
+  commands: { command: string; args: string }[]
 }
 
 export type ConfigOptions = {
@@ -118,8 +120,13 @@ type EngineOptions = {
   git?: string
   /** Running git fails (it is not installed, or too slow). */
   isGitBroken?: boolean
-  /** The size the engine auto-compacts at, and who set it; a size under 400k is the default here, so no suggestion about it arises. */
-  autoCompactWindow?: { threshold?: number; source?: string }
+  /** The size the engine auto-compacts at, and who set it; a size under 400k is the default here, so no suggestion about it arises. `window` is the size it is counted against. */
+  autoCompactWindow?: { threshold?: number; source?: string; window?: number }
+  /**
+   * What `/autocompact` does when the mod runs it: `works` sets the size (and the breakdown then reports it), `ignored` answers and
+   * changes nothing, `rejects` is a build that keeps the command to the person.
+   */
+  autocompactCommand?: 'works' | 'ignored' | 'rejects'
   /** What the API reports for each model step the kit answers (read when the step is answered, so a test may change it between steps). */
   stepUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model: string }
   /** More of what the breakdown lists: memory files, skills, MCP tools, agents, slash commands. */
@@ -166,6 +173,7 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
     isImageRefused: false,
     copied: [],
     isCopyBroken: false,
+    commands: [],
   }
 
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -266,6 +274,14 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
     suggest: options.config?.suggest === true,
     reduceMotion: options.config?.reduceMotion === true,
   }
+  // The size `/autocompact` set, when it did: the breakdown reports it, with the engine's 33k kept back before it is full.
+  let setWindow: number | 'auto' | null = null
+  on('command.run', { command: 'autocompact' }, (_$, e) => {
+    calls.commands.push({ command: e.command, args: e.args })
+    if (options.autocompactCommand === 'rejects') throw new Error('no such command')
+    if (options.autocompactCommand !== 'ignored') setWindow = e.args === 'auto' ? 'auto' : Number.parseInt(e.args, 10) * 1000
+    return { text: `Auto-compact window: ${e.args}` }
+  })
   on('session.usage', () => {
     calls.usageAsked += 1
     return {
@@ -286,8 +302,17 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
                 { name: 'Free space', tokens: 150_000, color: 'x', kind: 'free' },
               ],
               isAutoCompactEnabled: config.autoCompact,
-              autoCompactThreshold: options.autoCompactWindow === undefined ? 160_000 : options.autoCompactWindow.threshold,
-              autocompactSource: options.autoCompactWindow?.source ?? 'auto',
+              autoCompactThreshold:
+                typeof setWindow === 'number'
+                  ? setWindow - 33_000
+                  : setWindow === 'auto'
+                    ? (lastMeasure?.context.window ?? 200_000) - 33_000
+                    : options.autoCompactWindow === undefined
+                      ? 160_000
+                      : options.autoCompactWindow.threshold,
+              autocompactSource: typeof setWindow === 'number' ? 'settings' : setWindow === 'auto' ? 'auto' : (options.autoCompactWindow?.source ?? 'auto'),
+              rawMaxTokens: typeof setWindow === 'number' ? setWindow : setWindow === 'auto' ? (lastMeasure?.context.window ?? 200_000) : (options.autoCompactWindow?.window ?? lastMeasure?.context.window ?? 200_000),
+              maxTokens: typeof setWindow === 'number' ? setWindow : setWindow === 'auto' ? (lastMeasure?.context.window ?? 200_000) : (options.autoCompactWindow?.window ?? lastMeasure?.context.window ?? 200_000),
               memoryFiles: [],
               mcpTools: [],
               agents: [],

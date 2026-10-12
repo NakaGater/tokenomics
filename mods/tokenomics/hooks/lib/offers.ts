@@ -3,6 +3,7 @@ import type { Facts, ModelRow, Modes, OfferKind } from '../../types'
 import { THRESHOLDS, scaledPercent } from './advice'
 import { formatTokens, limitLabel } from './format'
 import { MODEL_LABEL, fitsWindow, lighterModels } from './modes'
+import { WINDOW_RECOMMENDED, savingAgainst, startsAt, windowView } from './window'
 
 export type OfferContext = { facts: Facts; modes: Modes; modelRow: ModelRow | null }
 
@@ -26,7 +27,7 @@ export type Offer = {
 export const OFFER_NAMES: Record<OfferKind, string> = {
   compact: '要約の提案',
   autocompact: '自動要約の提案',
-  window: '自動要約の窓の提案',
+  window: '自動要約のタイミングの提案',
   boundary: '区切りで新しく始める提案',
   worker: '軽量エージェントの提案',
   model: '軽いモデルへの提案',
@@ -41,9 +42,9 @@ export const isEpisodeId = (id: string): boolean => id.startsWith(EPISODE_PREFIX
 
 type Rule = (c: OfferContext) => Offer | null
 
-/** The size a shorter auto-compact window is proposed at, and the command that sets it. */
-export const WINDOW_TOKENS = 200_000
-export const WINDOW_COMMAND = '/autocompact 200k'
+/** The size a shorter auto-compact window is proposed at, and the command that sets it: the pane's recommended size. */
+export const WINDOW_TOKENS = WINDOW_RECOMMENDED
+export const WINDOW_COMMAND = `/autocompact ${WINDOW_TOKENS / 1000}k`
 
 /** `default`, `best` and `opusplan` name no model by themselves: the last answer says which one answered. */
 const AMBIGUOUS = ['default', 'best', 'opusplan']
@@ -111,14 +112,18 @@ const window: Rule = ({ facts: f }) => {
   if (f.autoCompactSource !== 'auto' && f.autoCompactSource !== 'model-default') return null
   // And once a conversation has grown to where waiting for it would hurt: also after the compaction that answered it.
   if (!f.hasGrown) return null
+  const view = windowView(f)
+  if (view === null) return null
+  // The engine's own size is never below 400k here (the rule needs a threshold of that), so the recommended one always saves.
+  const saving = savingAgainst(WINDOW_TOKENS, view.current)
   return {
     id: 'window',
     kind: 'window',
     level: 'notice',
     title: '自動要約が、かなり先になっています',
     why: `いまの設定では、約${formatTokens(threshold)} tok まで育ってから自動で要約されます。返信のたびに会話全体を読み直すので、それまでずっと重いままです。`,
-    does: `入力欄に ${WINDOW_COMMAND} を入れます。Enter で確定すると、自動要約の窓が約${formatTokens(WINDOW_TOKENS)} tok になります（自動要約は、窓がいっぱいになる少し手前で始まります。モデルごとに保存され、戻すには /autocompact auto）。`,
-    accept: '入力欄に入れる',
+    does: `自動要約のタイミングを ${formatTokens(WINDOW_TOKENS)} にします。約${formatTokens(startsAt(view, WINDOW_TOKENS))} tok で要約が始まり、長く続く会話では${f.rateLimits.length === 0 ? '費用' : '使用量'}が約${saving}% 少ない目安です（モデルごとに保存されます。ペインの「自動要約のタイミング」でいつでも変えられ、戻すには /autocompact auto）。`,
+    accept: `${formatTokens(WINDOW_TOKENS)} にする`,
   }
 }
 

@@ -1,10 +1,12 @@
 import type { Facts, TurnTokens } from '../../types'
 import { type Advice, THRESHOLDS, contextLevel, scaledPercent } from '../lib/advice'
 import { CAT_COLS, CAT_ROWS } from '../lib/cat'
+import { HEAVY_NOTICE_TOKENS } from '../lib/core/economics'
 import { bar, cellWidth, formatTokens, formatUsd, limitLabel, promptTokens, promptsOf, wrappedRows } from '../lib/format'
 import { fillOf, fillTokens, gaugeCells } from '../lib/gauge'
 import { FACE, FACE_CELLS, FACE_STYLE, moodOf } from '../lib/mascot'
 import type { Offer } from '../lib/offers'
+import { stakeOf } from '../lib/stake'
 
 import { OfferView } from './offer'
 import type { ImageElement, RasterElement, Ui } from './ui'
@@ -184,6 +186,16 @@ const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
       <Box gap={1}>
         <Text dimColor>エージェント</Text>
         <Text>{formatTokens(f.agentTokensThisTurn)} tok</Text>
+      </Box>,
+    )
+  }
+  // What every request carries, once a summary would make a difference to it.
+  const stake = stakeOf(f)
+  if (stake !== null && stake.isWorthSaying) {
+    rows.push(
+      <Box gap={1}>
+        <Text dimColor>毎回</Text>
+        <Text color={stake.tokens >= HEAVY_NOTICE_TOKENS ? 'warning' : undefined}>{`${formatTokens(stake.tokens)} tok を読み直し`}</Text>
       </Box>,
     )
   }

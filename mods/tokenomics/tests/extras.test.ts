@@ -58,11 +58,14 @@ describe('the auto-compact window', () => {
   })
   const kinds = (f: Facts) => computeOffers({ facts: f, modes: initialModes, modelRow: null }).map(o => o.kind)
 
-  test('a long conversation that the engine will let grow to 967k is offered a window of 200k', () => {
+  test('a long conversation that the engine will let grow to 967k is offered a size of 300k', () => {
     expect(kinds(facts())).toContain('window')
     const offer = computeOffers({ facts: facts(), modes: initialModes, modelRow: null }).find(o => o.kind === 'window')
-    expect(offer?.does).toContain(WINDOW_COMMAND)
+    expect(WINDOW_COMMAND).toBe('/autocompact 300k')
+    expect(offer?.does).toContain('自動要約のタイミングを 300k にします')
+    expect(offer?.does).toContain('約45% 少ない目安')
     expect(offer?.does).toContain('/autocompact auto')
+    expect(offer?.accept).toBe('300k にする')
     expect(offer?.why).toContain('967k')
   })
 
@@ -96,11 +99,11 @@ describe('the auto-compact window', () => {
     expect(await second.find({ type: 'Text', text: '自動要約が、かなり先になっています' })).toBeDefined()
   })
 
-  test('it says the window, not the size compaction will start at, which is a little before it', () => {
+  test('it names the size it sets and where compaction will start, which is a little before it', () => {
     const offer = computeOffers({ facts: facts(), modes: initialModes, modelRow: null }).find(o => o.kind === 'window')
-    expect(offer?.does).toContain('自動要約の窓が約200k tok')
-    expect(offer?.does).toContain('少し手前')
+    expect(offer?.does).toContain('約267k tok で要約が始まり')
   })
+
 
   test('/clear is a new conversation: having grown starts over, so nothing about the window is offered for it', async ($, on) => {
     const calls = engine(on, late)
@@ -115,7 +118,7 @@ describe('the auto-compact window', () => {
     expect(applyCleared({ ...initialFacts, hasGrown: true }).hasGrown).toBe(false)
   })
 
-  test('it comes after the compaction the same conversation calls for, and accepting only types the command', async ($, on) => {
+  test('it comes after the compaction the same conversation calls for, and accepting runs the command and checks it took', async ($, on) => {
     const calls = engine(on, late)
     await $.session.start(START)
 
@@ -134,17 +137,18 @@ describe('the auto-compact window', () => {
     await second.unmount()
 
     await answer($, 'accept')
-    expect(calls.filled).toEqual([WINDOW_COMMAND])
+    expect(calls.commands).toEqual([{ command: 'autocompact', args: '300k' }])
+    expect(calls.filled).toEqual([])
     expect(calls.configSets).toEqual([])
-    expect(calls.toasts.at(-1)).toContain('Enter で /autocompact 200k を実行します')
+    expect(calls.toasts.at(-1)).toContain('自動要約のタイミングを 300k にしました（約267k tok で要約が始まります')
 
     // Once a session, as every kind is.
     await $.session.measure(measure.context(17, 1_000_000))
     expect(calls.opened.length).toBe(2)
   })
 
-  test('what the person had typed is never overwritten: they are told what to type', async ($, on) => {
-    const calls = engine(on, { ...late, draft: 'half a sentence' })
+  test('where the build keeps the command to the person, it is typed, and what they had typed is never overwritten', async ($, on) => {
+    const calls = engine(on, { ...late, draft: 'half a sentence', autocompactCommand: 'rejects' })
     await $.session.start(START)
     await $.session.measure(measure.context(15, 1_000_000))
     await answer($, 'later')
@@ -152,7 +156,7 @@ describe('the auto-compact window', () => {
     await answer($, 'accept')
 
     expect(calls.filled).toEqual([])
-    expect(calls.toasts.at(-1)).toContain('/autocompact 200k と入力して Enter')
+    expect(calls.toasts.at(-1)).toContain('/autocompact 300k と入力して Enter')
   })
 
   test('"もう出さない" silences it, as for any other kind', async ($, on) => {
