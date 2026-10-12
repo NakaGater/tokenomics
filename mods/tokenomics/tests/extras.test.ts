@@ -4,6 +4,7 @@ import { type Engine, describe, expect, test } from 'claude-code/testing'
 import type { Facts } from '../types'
 
 import { computeAdvice } from '../hooks/lib/advice'
+import { parseLedger } from '../hooks/lib/core/ledger'
 import { applyCleared, initialFacts } from '../hooks/lib/facts'
 import { heavyFrom } from '../hooks/lib/heavy'
 import { initialModes } from '../hooks/lib/modes'
@@ -145,6 +146,11 @@ describe('the auto-compact window', () => {
     // Once a session, as every kind is.
     await $.session.measure(measure.context(17, 1_000_000))
     expect(calls.opened.length).toBe(2)
+
+    // The ledger counts it as set from the offer, not from the pane's slider.
+    await $.session.end({ reason: 'exit' } as never)
+    const counts = parseLedger(calls.store.get('ledger:v1')).days.flatMap(d => Object.entries(d.counts))
+    expect(counts.filter(([k]) => k.includes('window_'))).toEqual([['S:signal:observe:window_offer_300k', 1]])
   })
 
   test('where the build keeps the command to the person, it is typed, and what they had typed is never overwritten', async ($, on) => {

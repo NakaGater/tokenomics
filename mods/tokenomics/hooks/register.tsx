@@ -606,13 +606,19 @@ const startFresh = ($: Dollar): Promise<void> =>
     failed: '入力欄に /clear と入力すると、新しく始められます（今の会話は消えます）',
   })
 
+/** Where an auto-compact size was chosen: the pane's slider (and its reset), or the one-click offer. */
+type WindowSource = 'pane' | 'offer'
+
 /**
  * Sets the auto-compact size (`/autocompact`, saved per model; "auto" is the model's own). There is no setting call for it, so the
  * command is run as the person would run it, and the answer is the size the engine reports afterwards: where the run is refused or
  * changes nothing, the command is typed for the person to confirm instead. A press on a button is the confirmation of the run;
  * it is undone by `/autocompact auto`, which the pane's "標準に戻す" does.
+ *
+ * The ledger keeps which size was set from where (`window_pane_300k`, `window_offer_300k`, `window_pane_auto`), or that the command
+ * was typed instead (`window_typed_pane`): a count, never anything the person wrote.
  */
-const setWindow = async ($: Dollar, tokens: number): Promise<void> => {
+const setWindow = async ($: Dollar, tokens: number, source: WindowSource): Promise<void> => {
   if (await read($, isSettingWindow)) return
   const view = windowView(await read($, facts))
   if (view === null) return
@@ -634,6 +640,7 @@ const setWindow = async ($: Dollar, tokens: number): Promise<void> => {
       if (now !== null && now.current === want) {
         // The thumb stays on the size just set; it starts on the recommended one only when the pane opens.
         await update($, windowPick, () => tokens)
+        await svRecord($, 'S', 'observe', 'signal', `window_${source}_${arg}`, undefined, true)
         $.ui.toast(
           say(
             'good',
@@ -645,6 +652,7 @@ const setWindow = async ($: Dollar, tokens: number): Promise<void> => {
         return
       }
     }
+    await svRecord($, 'S', 'observe', 'signal', `window_typed_${source}`, undefined, true)
     await typeCommand($, command, {
       draft: `入力欄に ${command} と入力して Enter を押すと、自動要約のタイミングが変わります（モデルごとに保存されます）`,
       filled: `Enter で ${command} を実行します（モデルごとに保存されます。戻すには /autocompact auto）`,
@@ -658,7 +666,7 @@ const setWindow = async ($: Dollar, tokens: number): Promise<void> => {
 /** Back to the model's own size: `/autocompact auto`. */
 const resetWindow = async ($: Dollar): Promise<void> => {
   const view = windowView(await read($, facts))
-  if (view !== null) await setWindow($, view.standard)
+  if (view !== null) await setWindow($, view.standard, 'pane')
 }
 
 /** Registers the light helper; there is no unregistering, so `agent.offer` decides whether the model hears of it. */
@@ -813,7 +821,7 @@ const carryOut = async ($: Dollar, offer: Offer): Promise<void> => {
       await enableAutoCompact($)
       return
     case 'window':
-      await setWindow($, WINDOW_TOKENS)
+      await setWindow($, WINDOW_TOKENS, 'offer')
       return
     case 'boundary':
       await startFresh($)
@@ -992,7 +1000,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.0'
+const MOD_VERSION = '0.6.1'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -2109,7 +2117,7 @@ export const register: Register = (on, options) => {
       onStop: key => void stopSaving($, key),
       onRefresh: () => void refreshUsage($, true),
       onWindowPick: tokens => void update($, windowPick, () => tokens),
-      onWindowApply: tokens => void setWindow($, tokens),
+      onWindowApply: tokens => void setWindow($, tokens, 'pane'),
       onWindowReset: () => void resetWindow($),
       onCat: demo => peekCat($, demo),
       onClose: () => void $.ui.close({ id: PANE }),

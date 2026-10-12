@@ -1,5 +1,6 @@
 import { type Engine, describe, expect, test } from 'claude-code/testing'
 
+import { parseLedger } from '../hooks/lib/core/ledger'
 import { initialFacts } from '../hooks/lib/facts'
 import {
   FALLBACK_BUFFER,
@@ -19,7 +20,7 @@ import {
 } from '../hooks/lib/window'
 import type { Facts } from '../types'
 
-import { SURFACES, engine, measure, paneProps } from './kit'
+import { type Calls, SURFACES, engine, measure, paneProps } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 
@@ -185,6 +186,17 @@ const start = async ($: Engine) => {
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000, model: 'claude-opus-5-5' } } as never)
 }
 
+/** The session ends, which writes the ledger out; how many times the ledger counted `key`, and every key of the ledger. */
+const counted = async ($: Engine, calls: Calls) => {
+  await $.session.end({ reason: 'exit' } as never)
+  const days = parseLedger(calls.store.get('ledger:v1')).days
+  const all: Record<string, number> = {}
+  for (const d of days) for (const [k, v] of Object.entries(d.counts)) all[k] = (all[k] ?? 0) + v
+  return all
+}
+
+const windowKeys = (all: Record<string, number>): string[] => Object.keys(all).filter(k => k.includes('window_')).sort()
+
 describe('the pane’s slider', () => {
   test('is drawn on both surfaces, with 300k chosen and called the recommendation, and the size in force beside it', async ($, on) => {
     engineOn(on)
@@ -305,5 +317,53 @@ describe('the pane’s slider', () => {
     expect(await pane.find({ type: 'Text', text: '自動要約のタイミング' })).toBeDefined()
     expect(await pane.find({ type: 'Button', key: 'window-apply' })).toBeUndefined()
     await pane.unmount()
+  })
+
+  test('the ledger counts which size was set from the pane, as a count with the size in its name and nothing else', async ($, on) => {
+    const calls = engineOn(on)
+    await start($)
+    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    await pane.press({ key: 'window-apply' })
+    await pane.press({ key: 'window-stop-200000' })
+    await pane.press({ key: 'window-apply' })
+    await pane.press({ key: 'window-reset' })
+    await pane.unmount()
+
+    const all = await counted($, calls)
+    expect(windowKeys(all)).toEqual(['S:signal:observe:window_pane_200k', 'S:signal:observe:window_pane_300k', 'S:signal:observe:window_pane_auto'])
+    for (const k of windowKeys(all)) expect(all[k]).toBe(1)
+    // Only counts: nothing of the person's is in it.
+    expect(JSON.stringify(calls.store.get('ledger:v1'))).not.toContain('/autocompact')
+  })
+
+  test('stepping the thumb sets nothing and so records nothing', async ($, on) => {
+    const calls = engineOn(on)
+    await start($)
+    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    await pane.press({ key: 'window-more' })
+    await pane.press({ key: 'window-stop-150000' })
+    await pane.unmount()
+
+    expect(windowKeys(await counted($, calls))).toEqual([])
+  })
+
+  test('a command typed for the person is counted as typed, not as a size set', async ($, on) => {
+    const calls = engineOn(on, { autocompactCommand: 'rejects' })
+    await start($)
+    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    await pane.press({ key: 'window-apply' })
+    await pane.unmount()
+
+    expect(windowKeys(await counted($, calls))).toEqual(['S:signal:observe:window_typed_pane'])
+  })
+
+  test('a run that changes nothing is counted as typed too', async ($, on) => {
+    const calls = engineOn(on, { autocompactCommand: 'ignored' })
+    await start($)
+    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    await pane.press({ key: 'window-apply' })
+    await pane.unmount()
+
+    expect(windowKeys(await counted($, calls))).toEqual(['S:signal:observe:window_typed_pane'])
   })
 })
