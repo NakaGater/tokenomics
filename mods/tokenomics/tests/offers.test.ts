@@ -4,7 +4,7 @@ import { type Engine, expect, test } from 'claude-code/testing'
 import { FACE } from '../hooks/lib/mascot'
 
 import { parseLedger } from '../hooks/lib/core/ledger'
-import { MODEL_SWITCH, SURFACES, answer, bandProps, engine, measure, offerPaneProps, paneProps, runStep, type Calls } from './kit'
+import { MODEL_SWITCH, SURFACES, answer, bandProps, engine, measure, offerPaneProps, paneProps, runStep, settingsPaneProps, type Calls } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 const DIALOG = 'tokenomics-offer'
@@ -170,13 +170,15 @@ test('"もう出さない" is remembered past the session, and the pane can brin
   await $.session.measure(state(80))
   expect(dialogs(calls)).toBe(1)
 
+  const settings = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
+  expect(await settings.find({ type: 'Text', text: '止めている提案' })).toBeDefined()
+  expect(await settings.find({ type: 'Text', text: '要約の提案' })).toBeDefined()
+  // Muted, it is not on the analysis pane's list of things to do either, nor listed there as put off.
   const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
-  expect(await pane.find({ type: 'Text', text: '止めている提案' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '要約の提案' })).toBeDefined()
-  // Muted, it is not on the pane's list of things to do either.
   expect(await pane.find({ key: 'standing-compact-70-accept' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: '止めている提案' })).toBeUndefined()
 
-  await pane.press({ key: 'resume-compact' })
+  await settings.press({ key: 'resume-compact' })
   expect(calls.store.get('mutedOffers')).toEqual([])
   await $.session.measure(state(10))
   await $.session.measure(state(80))
@@ -274,7 +276,7 @@ test('small turns on a model that thinks hard propose a lower effort; accepted, 
   expect(calls.steps.at(-1)?.effort).toBeUndefined()
 
   // The pane lists it, and ends it.
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: /考える深さ: ふつうに制限中/ })).toBeDefined()
   await pane.press({ key: 'stop-effort' })
   await runStep($ as never, { effort: 'max' })
@@ -354,7 +356,7 @@ test('after a large read the light helper is proposed; accepted, it is registere
   expect((await $.agent.offer(WORKER_OFFER as never)).isOffered).toBe(true)
   expect(await band.find({ type: 'Text', text: '節約中: 軽量エージェント' })).toBeDefined()
 
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   await pane.press({ key: 'stop-worker' })
   expect((await $.agent.offer(WORKER_OFFER as never)).isOffered).toBe(false)
   expect(await band.find({ type: 'Text', text: /節約中/ })).toBeUndefined()
@@ -390,7 +392,7 @@ test('a lighter model is proposed while the conversation is small and a limit is
   expect(calls.toasts.at(-1)).toContain('終了するとき opus に戻します')
   expect(calls.store.get('pendingModel')).toEqual({ previous: 'opus', switchedTo: 'sonnet' })
 
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: /モデルを切り替え中（元: opus）/ })).toBeDefined()
   expect(await pane.find({ key: 'stop-model' }).then(b => b?.props.label)).toBe('元に戻す')
   await pane.press({ key: 'stop-model' })
@@ -451,7 +453,7 @@ test('a model the engine refuses leaves everything as it was, and says why', asy
 
   expect(calls.toasts.at(-1)).toContain('not allowed by policy')
   expect(calls.store.get('pendingModel')).toBeUndefined()
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   expect(await pane.find({ key: 'stop-model' })).toBeUndefined()
 })
 

@@ -27,7 +27,7 @@ import {
 } from '../hooks/lib/pace'
 import { QUADRANTS, TERMINAL_DEFAULT, packCells } from '../hooks/lib/raster'
 
-import { answer, bandProps, decodeCells, engine, paneProps } from './kit'
+import { answer, bandProps, decodeCells, engine, settingsPaneProps } from './kit'
 
 const BASELINE = 27_000
 
@@ -521,7 +521,7 @@ test('a cat dozing in its slow frames still jumps at once when the conversation 
 test('the pane can show every pose, whatever the conversation is like, and then the cat goes back to the facts', async ($, on) => {
   const calls = engine(on)
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   expect(await pane.find({ type: 'Button', key: 'cat-sprint' })).toBeDefined()
 
   await pane.press({ key: 'cat-sprint' })
@@ -552,7 +552,7 @@ test('the pane can show every pose, whatever the conversation is like, and then 
 test('the words beside the cat follow what it is doing, though the band is drawn again only when that changes', async ($, on) => {
   const calls = engine(on)
   const band = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   await calls.clock.advance(50)
   expect(await band.find({ type: 'Text', text: /ぐっすり眠って/ })).toBeDefined()
 
@@ -594,7 +594,7 @@ test('with "Reduce motion" on the cat stands still: a picture for each state, no
   expect((await band.find({ type: 'Raster', key: 'cat' }))?.props.cells).not.toBe(cellsOf({ pose: 'jump', frame: 0, isSweating: false }))
 
   // The pane has no demonstration to give.
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   expect(await pane.find({ type: 'Button', key: 'cat-sprint' })).toBeUndefined()
 })
 
@@ -631,7 +631,7 @@ test('a build with no "Reduce motion" row leaves the cat running', async ($, on)
 
 test('the pane offers the demonstration only once the band is showing a cat', async ($, on) => {
   engine(on)
-  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
   expect(await pane.find({ type: 'Button', key: 'cat-sprint' })).toBeUndefined()
 })
 

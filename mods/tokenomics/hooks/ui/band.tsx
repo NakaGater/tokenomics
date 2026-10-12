@@ -49,7 +49,9 @@ export type BandProps = {
   columns: number
   /** Rows the band may take before it scrolls (in fullscreen, half the terminal less the prompt). */
   maxRows: number
-  onDetails: () => void
+  /** Shows the analysis pane, and the settings pane. */
+  onAnalysis: () => void
+  onSettings: () => void
   onAccept: () => void
   onLater: () => void
   onMute: () => void
@@ -280,7 +282,8 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
         )}
         {p.nudge === null && p.advice === null && <Text dimColor>{p.cat.phrase}</Text>}
         <Box gap={2} flexWrap="wrap">
-          <Button key="details" label="詳しく" onPress={p.onDetails} />
+          <Button key="analysis" label="詳しく分析" onPress={p.onAnalysis} />
+          <Button key="settings" label="設定" onPress={p.onSettings} />
           {p.tag !== null && <Text dimColor>{p.tag}</Text>}
         </Box>
       </Box>
@@ -315,7 +318,8 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
         <TurnBlock ui={p.ui} turn={f.last} />
         {figures(p.ui, f, p.savedTokens, p.keptTokens)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}
-        <Button key="details" label="詳しく" onPress={p.onDetails} />
+        <Button key="analysis" label="詳しく分析" onPress={p.onAnalysis} />
+        <Button key="settings" label="設定" onPress={p.onSettings} />
       </Box>
       {p.nudge !== null && (
         <Box marginLeft={isNarrow ? 0 : FACE_CELLS + 2}>

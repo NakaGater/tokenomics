@@ -17,7 +17,7 @@ test('a fresh session shows the context at 0% and an empty "this turn", and noth
     const ui = await $.ui.mount({ ...bandProps(), surface })
     expect(await ui.find({ type: 'Text', text: /0%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '—' })).toBeDefined()
-    expect(await ui.find({ type: 'Button', key: 'details' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'analysis' })).toBeDefined()
     expect(await ui.find({ key: 'offer-accept' })).toBeUndefined()
     expect(await ui.find({ key: 'later' })).toBeUndefined()
 
@@ -203,7 +203,7 @@ test('the cat’s card needs its six rows: with less room the band is the plain 
 
   const five = await $.ui.mount({ ...bandProps({ maxRows: 5 }), surface: 'terminal' })
   expect(await five.find({ type: 'Raster' })).toBeUndefined()
-  expect(await five.find({ type: 'Button', key: 'details' })).toBeDefined()
+  expect(await five.find({ type: 'Button', key: 'analysis' })).toBeDefined()
 })
 
 test('accepting from the card compacts once, says how much it saved, and lowers the fill at once', async ($, on) => {
@@ -256,7 +256,7 @@ test('a one-line suggestion takes the place of the cat’s phrase in the card, a
   expect(await phraseIn(ui)).toBeUndefined()
   expect(await ui.find({ type: 'Raster', key: 'cat' })).toBeDefined()
   expect(await ui.find({ type: 'Raster', key: 'gauge' })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'details' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'analysis' })).toBeDefined()
 })
 
 test('where the band is one plain row, the suggestion is a row of its own under it', async ($, on) => {
@@ -270,7 +270,7 @@ test('where the band is one plain row, the suggestion is a row of its own under 
   for (const ui of [desktop, narrow]) {
     expect(await nudgeIn(ui)).toBe(DEMO_SHORT)
     expect(await ui.find({ type: 'Raster' })).toBeUndefined()
-    expect(await ui.find({ type: 'Button', key: 'details' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'analysis' })).toBeDefined()
   }
 })
 

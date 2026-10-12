@@ -20,7 +20,7 @@ import {
 } from '../hooks/lib/window'
 import type { Facts } from '../types'
 
-import { type Calls, SURFACES, engine, measure, paneProps } from './kit'
+import { type Calls, SURFACES, engine, measure, settingsPaneProps } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 
@@ -202,7 +202,7 @@ describe('the pane’s slider', () => {
     engineOn(on)
     await start($)
     for (const surface of SURFACES) {
-      const pane = await $.ui.mount({ ...paneProps, surface })
+      const pane = await $.ui.mount({ ...settingsPaneProps, surface })
       expect(await pane.find({ type: 'Text', text: '自動要約のタイミング' })).toBeDefined()
       expect(await pane.find({ type: 'Text', text: 'いま: 500k。約 467k tok で要約が始まり、標準より 費用が約 35% 少ない目安。' })).toBeDefined()
       expect(await pane.find({ type: 'Text', text: '★ おすすめ' })).toBeDefined()
@@ -216,7 +216,7 @@ describe('the pane’s slider', () => {
   test('the terminal draws the track as a button for each stop, and stepping or pressing a stop moves the thumb', async ($, on) => {
     engineOn(on)
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     for (const tokens of WINDOW_STOPS.map(s => s.tokens)) {
       expect(await pane.find({ type: 'Button', key: `window-stop-${tokens}` })).toBeDefined()
     }
@@ -238,7 +238,7 @@ describe('the pane’s slider', () => {
   test('pressing the button runs /autocompact, checks that the size the engine reports is the one asked for, and says so', async ($, on) => {
     const calls = engineOn(on)
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-apply' })
 
     expect(calls.commands).toEqual([{ command: 'autocompact', args: '300k' }])
@@ -253,7 +253,7 @@ describe('the pane’s slider', () => {
   test('a size other than the recommended one, once set, stays chosen: the recommendation is not offered straight after', async ($, on) => {
     const calls = engineOn(on)
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-stop-200000' })
     await pane.press({ key: 'window-apply' })
 
@@ -268,7 +268,7 @@ describe('the pane’s slider', () => {
   test('"標準に戻す" runs /autocompact auto', async ($, on) => {
     const calls = engineOn(on)
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-reset' })
 
     expect(calls.commands).toEqual([{ command: 'autocompact', args: 'auto' }])
@@ -279,7 +279,7 @@ describe('the pane’s slider', () => {
   test('a build that keeps the command to the person gets it typed for them to confirm', async ($, on) => {
     const calls = engineOn(on, { autocompactCommand: 'rejects' })
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-apply' })
 
     expect(calls.filled).toEqual(['/autocompact 300k'])
@@ -290,7 +290,7 @@ describe('the pane’s slider', () => {
   test('a run that changes nothing is not reported as done: the command is typed instead', async ($, on) => {
     const calls = engineOn(on, { autocompactCommand: 'ignored' })
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-apply' })
 
     expect(calls.commands.length).toBe(1)
@@ -303,7 +303,7 @@ describe('the pane’s slider', () => {
     engine(on)
     await $.session.start(START)
     await $.session.measure(measure.context(15, 200_000))
-    const short = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const short = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     expect(await short.find({ type: 'Text', text: '自動要約のタイミング' })).toBeUndefined()
     await short.unmount()
   })
@@ -313,7 +313,7 @@ describe('the pane’s slider', () => {
     await $.session.start(START)
     await $.session.measure(measure.context(15, 1_000_000))
     await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 150_000, model: 'claude-opus-5-5' } } as never)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     expect(await pane.find({ type: 'Text', text: '自動要約のタイミング' })).toBeDefined()
     expect(await pane.find({ type: 'Button', key: 'window-apply' })).toBeUndefined()
     await pane.unmount()
@@ -322,7 +322,7 @@ describe('the pane’s slider', () => {
   test('the ledger counts which size was set from the pane, as a count with the size in its name and nothing else', async ($, on) => {
     const calls = engineOn(on)
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-apply' })
     await pane.press({ key: 'window-stop-200000' })
     await pane.press({ key: 'window-apply' })
@@ -339,7 +339,7 @@ describe('the pane’s slider', () => {
   test('stepping the thumb sets nothing and so records nothing', async ($, on) => {
     const calls = engineOn(on)
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-more' })
     await pane.press({ key: 'window-stop-150000' })
     await pane.unmount()
@@ -350,7 +350,7 @@ describe('the pane’s slider', () => {
   test('a command typed for the person is counted as typed, not as a size set', async ($, on) => {
     const calls = engineOn(on, { autocompactCommand: 'rejects' })
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-apply' })
     await pane.unmount()
 
@@ -360,7 +360,7 @@ describe('the pane’s slider', () => {
   test('a run that changes nothing is counted as typed too', async ($, on) => {
     const calls = engineOn(on, { autocompactCommand: 'ignored' })
     await start($)
-    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
     await pane.press({ key: 'window-apply' })
     await pane.unmount()
 

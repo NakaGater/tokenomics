@@ -54,18 +54,19 @@ import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, ste
 import { advisorMs, advisorRead, noteOpenedBy, noteWritten, subagentSpend } from './lib/core/spend'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
-import { report } from './lib/status'
+import { report, settingsReport } from './lib/status'
 import { commandArg, commandOf, startsAt, windowView } from './lib/window'
 import { WORKER, WORKER_DESCRIPTION, WORKER_PROMPT, WORKER_TOOLS } from './lib/worker'
 import { Band } from './ui/band'
 import { OfferView } from './ui/offer'
-import { Pane } from './ui/pane'
+import { Pane, SettingsPane } from './ui/pane'
 import type { ImageElement, RasterElement } from './ui/ui'
 
 type Dollar = EngineInterface
 
 const NAME = 'tokenomics'
 const PANE = 'tokenomics'
+const SETTINGS_PANE = 'tokenomics-settings'
 const OFFER_PANE = 'tokenomics-offer'
 
 /**
@@ -420,12 +421,20 @@ const refreshSettings = async ($: Dollar): Promise<void> => {
   }
 }
 
-const openPane = async ($: Dollar) => {
-  const opened = await $.ui.open({ id: PANE, title: 'トークン消費' })
+/**
+ * The analysis pane or the settings pane, one at a time: the other is closed first, so that what the person pressed is what
+ * they see (two panes open would be two tabs, and the new one might not be the one shown).
+ */
+const showPane = async ($: Dollar, id: typeof PANE | typeof SETTINGS_PANE) => {
+  await $.ui.close({ id: id === PANE ? SETTINGS_PANE : PANE })
+  const opened = await $.ui.open({ id, title: id === PANE ? '分析' : '設定' })
   await refreshUsage($, true)
   await refreshSettings($)
   return opened
 }
+
+const openPane = ($: Dollar) => showPane($, PANE)
+const openSettings = ($: Dollar) => showPane($, SETTINGS_PANE)
 
 /**
  * `git status --short --branch` of the working directory, as lines; none where it is not a repository, git cannot be run,
@@ -1009,7 +1018,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.3'
+const MOD_VERSION = '0.6.4'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1657,7 +1666,7 @@ export const register: Register = (on, options) => {
     }
     await $.command.register({
       name: NAME,
-      description: 'トークン消費の状況と、いまやると良い節約を表示します。',
+      description: 'トークン消費の分析と、いまやると良い節約を表示します。`/tokenomics settings` で設定（自動要約のタイミングなど）を開きます。',
     })
     await loadMuted($)
     // A model this mod moved in an earlier session whose end was cut short: put it back.
@@ -1700,11 +1709,13 @@ export const register: Register = (on, options) => {
           : '次の返信のあとに、提案の表示テストが一行出ます。',
       }
     }
-    const opened = isHud ? await openPane($) : { isPlaced: false }
+    const isSettings = word === 'settings' || word === '設定'
+    const opened = isHud ? await (isSettings ? openSettings($) : openPane($)) : { isPlaced: false }
     if (opened.isPlaced) return {}
 
     // Too narrow to seat a pane: say the same thing as text.
     const ctx = await offerContext($)
+    if (isSettings) return { text: settingsReport(ctx.facts, activeSavings(ctx.modes, isNoteByDefault()), await read($, muted)) }
     return { text: report(ctx.facts, computeAdvice(ctx.facts), standingOffers(ctx, await read($, muted)), await read($, savings)) }
   }).catch(($, e, next) =>
     next.called ? next(e) : { text: `${$.plugin.name}: うまく開けませんでした。もう一度お試しください。` },
@@ -2112,7 +2123,8 @@ export const register: Register = (on, options) => {
       isWorking: e.props.isWorking,
       columns: e.props.bodyColumns,
       maxRows: e.props.maxRows,
-      onDetails: () => void openPane($),
+      onAnalysis: () => void openPane($),
+      onSettings: () => void openSettings($),
       onAccept: () => void acceptOpen($),
       onLater: () => void closeOffer($),
       onMute: () => void muteOpen($),
@@ -2147,8 +2159,6 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (!isHud) return next(e)
     const ctx = await offerContext($)
-    const mutedKinds = await read($, muted)
-
     const ui = $.ui.resolve(e)
 
     return Pane({
@@ -2157,26 +2167,41 @@ export const register: Register = (on, options) => {
       bodyColumns: e.props.bodyColumns,
       facts: ctx.facts,
       advice: computeAdvice(ctx.facts),
-      offers: standingOffers(ctx, mutedKinds),
+      offers: standingOffers(ctx, await read($, muted)),
       savings: await read($, savings),
       heavy: await read($, heavy),
-      active: activeSavings(ctx.modes, isNoteByDefault()),
-      muted: mutedKinds,
       isCompacting: (await read($, busy)) === 'compact',
-      hasCat: catSite !== null && !ctx.facts.isMotionReduced,
       rows: e.viewport?.rows ?? 24,
-      windowAsked: await read($, windowPick),
-      isSettingWindow: await read($, isSettingWindow),
       onAccept: offer => void acceptFromPane($, offer),
       onMuteKind: kind => void muteFromPane($, kind),
+      onRefresh: () => void refreshUsage($, true),
+      onSettings: () => void openSettings($),
+      onClose: () => void $.ui.close({ id: PANE }),
+    })
+  })
+
+  on('ui.render', { component: 'Pane', requestId: SETTINGS_PANE }, async ($, e, next) => {
+    if (!isHud) return next(e)
+    const ctx = await offerContext($)
+    const ui = $.ui.resolve(e)
+
+    return SettingsPane({
+      ui,
+      Raster: e.surface === 'terminal' && 'Raster' in ui ? (ui as unknown as { Raster: RasterElement }).Raster : null,
+      facts: ctx.facts,
+      active: activeSavings(ctx.modes, isNoteByDefault()),
+      muted: await read($, muted),
+      hasCat: catSite !== null && !ctx.facts.isMotionReduced,
+      windowAsked: await read($, windowPick),
+      isSettingWindow: await read($, isSettingWindow),
       onResume: kind => void resumeKind($, kind),
       onStop: key => void stopSaving($, key),
-      onRefresh: () => void refreshUsage($, true),
       onWindowPick: tokens => void update($, windowPick, () => tokens),
       onWindowApply: tokens => void setWindow($, tokens, 'pane'),
       onWindowReset: () => void resetWindow($),
       onCat: demo => peekCat($, demo),
-      onClose: () => void $.ui.close({ id: PANE }),
+      onAnalysis: () => void openPane($),
+      onClose: () => void $.ui.close({ id: SETTINGS_PANE }),
     })
   })
 }

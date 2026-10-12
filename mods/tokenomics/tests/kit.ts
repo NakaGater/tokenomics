@@ -51,6 +51,13 @@ export const paneProps = {
   viewport: { columns: 100, rows: 40 },
 } as const
 
+/** The settings pane, drawn by the same mod under its own id. */
+export const settingsPaneProps = {
+  ...paneProps,
+  requestId: 'tokenomics-settings',
+  props: { ...paneProps.props, title: '設定' },
+} as const
+
 export type Calls = {
   /** The conversation's own size, apart from the prompt and tools the window holds from the start; change it mid-test. */
   conversation: number

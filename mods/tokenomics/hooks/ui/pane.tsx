@@ -14,10 +14,17 @@ import { RequestChart } from './chart'
 import type { RasterElement, Ui } from './ui'
 import { WindowPicker } from './window'
 
-export type PaneProps = {
+/** What both panes carry: how to draw, and the buttons that close one and go to the other. */
+type FrameProps = {
   ui: Ui
   /** The terminal's grid of colored cells, or null where there is none. */
   Raster: RasterElement | null
+  /** Closes this pane. */
+  onClose: () => void
+}
+
+/** The analysis pane: what the conversation holds and what it has cost, and what is worth doing about it. */
+export type PaneProps = FrameProps & {
   /** Cells across the pane's body. */
   bodyColumns: number
   facts: Facts
@@ -29,28 +36,36 @@ export type PaneProps = {
   savings: Savings
   /** The context broken down, or null before it was asked for. */
   heavy: HeavyItem[] | null
+  isCompacting: boolean
+  /** Rows the pane has down. */
+  rows: number
+  onAccept: (offer: Offer) => void
+  onMuteKind: (kind: OfferKind) => void
+  onRefresh: () => void
+  /** Shows the settings pane in its place. */
+  onSettings: () => void
+}
+
+/** The settings pane: what the person can set or stop, and the cat's demonstration. */
+export type SettingsPaneProps = FrameProps & {
+  facts: Facts
   /** What was accepted and is still running. */
   active: readonly ActiveSaving[]
   /** Kinds of suggestion the person asked not to see again. */
   muted: readonly OfferKind[]
-  isCompacting: boolean
   /** The band is drawing its cat, so the demonstration below has something to show. */
   hasCat: boolean
-  /** Rows the pane has down. */
-  rows: number
   /** The auto-compact size the person stepped to, or null; and whether the mod is setting one. */
   windowAsked: number | null
   isSettingWindow: boolean
-  onAccept: (offer: Offer) => void
-  onMuteKind: (kind: OfferKind) => void
   onResume: (kind: OfferKind) => void
   onStop: (key: SavingKey) => void
-  onRefresh: () => void
   onWindowPick: (tokens: number) => void
   onWindowApply: (tokens: number) => void
   onWindowReset: () => void
   onCat: (demo: Demo) => void
-  onClose: () => void
+  /** Shows the analysis pane in its place. */
+  onAnalysis: () => void
 }
 
 const CAT_DEMOS: readonly { demo: Demo; label: string }[] = [
@@ -86,12 +101,37 @@ const Heading = (p: { ui: Ui; children: string }) => {
   )
 }
 
+/**
+ * The top row of a pane: what it is (a lone pane has no tab to say so) and a button to the other one. The two are never
+ * up together, so this is how the person goes from one to the other without going back to the band.
+ */
+const Top = (p: { ui: Ui; title: string; toLabel: string; toKey: string; onGo: () => void }) => {
+  const { Box, Text, Button } = p.ui
+  return (
+    <Box gap={2} flexWrap="wrap">
+      <Text bold>{p.title}</Text>
+      <Button key={p.toKey} label={p.toLabel} onPress={p.onGo} />
+    </Box>
+  )
+}
+
+const Close = (p: { ui: Ui; onClose: () => void }) => {
+  const { Box, Button } = p.ui
+  return (
+    <Box>
+      <Button key="close" label="閉じる" role="dismiss" onPress={p.onClose} />
+    </Box>
+  )
+}
+
+/** What the conversation holds and what it has cost, and what is worth doing about it: all of it to read, none of it a setting. */
 export const Pane = (p: PaneProps) => {
   const { Box, Text, Button } = p.ui
-  const autoSize = windowView(p.facts)
 
   return (
     <Box flexDirection="column" gap={1}>
+      <Top ui={p.ui} title="トークン消費の分析" toLabel="設定を開く" toKey="to-settings" onGo={p.onSettings} />
+
       <Box flexDirection="column">
         <Heading ui={p.ui}>今やること</Heading>
         {p.offers.length === 0 && p.advice.length === 0 && (
@@ -143,35 +183,10 @@ export const Pane = (p: PaneProps) => {
         ))}
       </Box>
 
-      {autoSize !== null && (
-        <WindowPicker
-          ui={p.ui}
-          isTerminal={p.Raster !== null}
-          facts={p.facts}
-          view={autoSize}
-          asked={p.windowAsked}
-          isBusy={p.isSettingWindow}
-          onPick={p.onWindowPick}
-          onApply={p.onWindowApply}
-          onReset={p.onWindowReset}
-        />
-      )}
-
       <Box flexDirection="column">
         <Heading ui={p.ui}>{`直近 ${RECENT_REQUESTS} 回のリクエスト`}</Heading>
         <Text dimColor>本体の呼び出しだけ（サブエージェントは含みません）。ターンをまたいで、左が古く右が新しい。</Text>
         <RequestChart ui={p.ui} Raster={p.Raster} requests={recentOf(p.facts)} columns={p.bodyColumns} />
-      </Box>
-
-      <Box flexDirection="column">
-        <Heading ui={p.ui}>いま効いている節約</Heading>
-        {p.active.length === 0 && <Text dimColor>提案を受け入れると、ここに並びます。いつでもやめられます。</Text>}
-        {p.active.map(saving => (
-          <Box gap={2} flexWrap="wrap">
-            <Text>{saving.label}</Text>
-            <Button key={`stop-${saving.key}`} label={saving.stop} onPress={() => p.onStop(saving.key)} />
-          </Box>
-        ))}
       </Box>
 
       <Box flexDirection="column">
@@ -192,6 +207,54 @@ export const Pane = (p: PaneProps) => {
               <Text dimColor>  ・{line}</Text>
             ))}
             {item.hint !== undefined && <Text dimColor>  → {item.hint}</Text>}
+          </Box>
+        ))}
+      </Box>
+
+      {p.rows >= ROOM_FOR_TIPS && (
+        <Box flexDirection="column">
+          <Heading ui={p.ui}>節約のコツ</Heading>
+          {TIPS.map(tip => (
+            <Text dimColor>・{tip}</Text>
+          ))}
+        </Box>
+      )}
+
+      <Close ui={p.ui} onClose={p.onClose} />
+    </Box>
+  )
+}
+
+/** What the person can set, stop or bring back: the auto-compact size, the savings running, the suggestions put off, the cat. */
+export const SettingsPane = (p: SettingsPaneProps) => {
+  const { Box, Text, Button } = p.ui
+  const autoSize = windowView(p.facts)
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Top ui={p.ui} title="設定" toLabel="分析を開く" toKey="to-analysis" onGo={p.onAnalysis} />
+
+      {autoSize !== null && (
+        <WindowPicker
+          ui={p.ui}
+          isTerminal={p.Raster !== null}
+          facts={p.facts}
+          view={autoSize}
+          asked={p.windowAsked}
+          isBusy={p.isSettingWindow}
+          onPick={p.onWindowPick}
+          onApply={p.onWindowApply}
+          onReset={p.onWindowReset}
+        />
+      )}
+
+      <Box flexDirection="column">
+        <Heading ui={p.ui}>いま効いている節約</Heading>
+        {p.active.length === 0 && <Text dimColor>提案を受け入れると、ここに並びます。いつでもやめられます。</Text>}
+        {p.active.map(saving => (
+          <Box gap={2} flexWrap="wrap">
+            <Text>{saving.label}</Text>
+            <Button key={`stop-${saving.key}`} label={saving.stop} onPress={() => p.onStop(saving.key)} />
           </Box>
         ))}
       </Box>
@@ -220,18 +283,7 @@ export const Pane = (p: PaneProps) => {
         </Box>
       )}
 
-      {p.rows >= ROOM_FOR_TIPS && (
-        <Box flexDirection="column">
-          <Heading ui={p.ui}>節約のコツ</Heading>
-          {TIPS.map(tip => (
-            <Text dimColor>・{tip}</Text>
-          ))}
-        </Box>
-      )}
-
-      <Box>
-        <Button key="close" label="閉じる" role="dismiss" onPress={p.onClose} />
-      </Box>
+      <Close ui={p.ui} onClose={p.onClose} />
     </Box>
   )
 }

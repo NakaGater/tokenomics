@@ -1,4 +1,4 @@
-import type { Facts, Savings } from '../../types'
+import type { Facts, OfferKind, Savings } from '../../types'
 
 import type { Advice } from './advice'
 import { sessionOf } from './facts'
@@ -6,7 +6,9 @@ import { bar, clockLabel, exactTokens, formatTokens, formatUsd, limitLabel, prom
 import { type Fill, fillOf } from './gauge'
 import { stakeOf, stakeText } from './stake'
 import { FACE, moodForLevel } from './mascot'
-import type { Offer } from './offers'
+import type { ActiveSaving } from './modes'
+import { OFFER_NAMES, type Offer } from './offers'
+import { commandOf, currentLine, windowView } from './window'
 
 export type Row = { label: string; value: string }
 
@@ -167,5 +169,21 @@ export const report = (f: Facts, advice: readonly Advice[], offers: readonly Off
   for (const o of offers) lines.push(`  ・${o.title}`, `    ${o.why}`, `    受け入れると: ${o.does}`)
   for (const a of advice) lines.push(`  ・${a.title}`, `    ${a.detail}`)
   if (offers.length > 0) lines.push('', '  受け入れる操作は、プロンプトの上の枠、または /tokenomics のパネルにあります。')
+  return lines.join('\n')
+}
+
+/**
+ * The settings, as text, for a terminal too narrow for the pane: the auto-compact size in force and how to change it, what is
+ * running that the person accepted, and the suggestions put off.
+ */
+export const settingsReport = (f: Facts, active: readonly ActiveSaving[], muted: readonly OfferKind[]): string => {
+  const view = windowView(f)
+  const lines: string[] = ['⚙ トークン消費の設定', '', '自動要約のタイミング']
+  if (view === null) lines.push('  このモデルの窓では、選べる大きさがありません。')
+  else lines.push(`  ${currentLine(view, f.rateLimits.length === 0)}`, `  変えるには: ${commandOf(view, 300_000)}（100k〜1M。標準に戻すには /autocompact auto）`)
+  lines.push('', 'いま効いている節約')
+  if (active.length === 0) lines.push('  ありません。')
+  for (const a of active) lines.push(`  ・${a.label}`)
+  if (muted.length > 0) lines.push('', '止めている提案', ...muted.map(kind => `  ・${OFFER_NAMES[kind]}`))
   return lines.join('\n')
 }
