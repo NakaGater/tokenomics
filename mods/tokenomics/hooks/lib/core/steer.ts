@@ -100,16 +100,21 @@ const segments = (command: string): string[] =>
     .map(s => s.trim().replace(ENV, ''))
     .filter(s => s !== '')
 
-const isSearch = (command: string): boolean => {
-  const first = segments(command).find(s => !/^cd(?:\s|$)/.test(s))
-  if (first === undefined) return false
-  const word = first.split(/\s+/)[0] ?? ''
-  if (first.startsWith('git grep')) return true
-  if (!SEARCHERS.has(word)) return false
+/**
+ * Whether a command line searches. A line is often several commands (`S=/x; echo ---; grep ...`, `sed -n 1,5p f; grep ...`,
+ * `for f in a b; do grep ...; done`), so any command of it counts, not only the first: measured on this machine the first-command
+ * rule saw 57 of the 142 searching lines of one session. A search at the end of a pipe is not one (`ls | grep x` lists).
+ */
+const isSearch = (command: string): boolean =>
+  segments(command).some(raw => {
+    const segment = raw.replace(/^(?:do|then|else|elif|\{|\()\s+/, '')
+    const word = segment.split(/\s+/)[0] ?? ''
+    if (segment.startsWith('git grep')) return true
+    if (!SEARCHERS.has(word)) return false
 
-  // `find` that changes things is not looking.
-  return !(word === 'find' && /\s-(?:delete|exec|execdir|ok)\b/.test(first))
-}
+    // `find` that changes things is not looking.
+    return !(word === 'find' && /\s-(?:delete|exec|execdir|ok)\b/.test(segment))
+  })
 
 // Runners that run everything when given nothing: only flags may follow.
 const SUITES: readonly RegExp[] = [

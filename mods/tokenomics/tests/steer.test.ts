@@ -33,6 +33,20 @@ describe('what counts as a search or a whole test run', () => {
     expect(callKind('Glob', { pattern: '**/*.ts' })).toBe('search')
   })
 
+  test('a search anywhere in a line of several commands counts, as the model writes them', () => {
+    for (const c of [
+      'S=/tmp/x; grep -n foo src',
+      'echo ---; rg foo',
+      'sed -n 1,5p src/a.ts; grep -n foo src',
+      'cd app && ls && find . -name "*.ts"',
+      'for f in a b; do grep -n foo $f; done',
+      'if true; then rg foo; fi',
+      'git status && git grep foo',
+    ]) {
+      expect(callKind('Bash', bashCall(c)), c).toBe('search')
+    }
+  })
+
   test('not searches: a search at the end of a pipe, a find that changes things, reading, listing', () => {
     for (const c of ['ls src | grep foo', 'cat a.ts | grep x', 'find . -name "*.o" -delete', 'find . -exec rm {} ;', 'cat src/a.ts', 'ls -la', 'git status', 'echo grep']) {
       expect(callKind('Bash', bashCall(c))).toBeNull()
