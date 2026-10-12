@@ -1,7 +1,8 @@
 import type { Facts, Savings } from '../../types'
 
 import type { Advice } from './advice'
-import { bar, clockLabel, formatTokens, formatUsd, limitLabel } from './format'
+import { sessionOf } from './facts'
+import { bar, clockLabel, exactTokens, formatTokens, formatUsd, limitLabel, promptTokens, promptsOf } from './format'
 import { type Fill, fillOf } from './gauge'
 import { FACE, moodForLevel } from './mascot'
 import type { Offer } from './offers'
@@ -41,12 +42,19 @@ export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
   return rows
 }
 
-/** What stands beside the context's percent: the tokens against the size it is counted in, and what is left before the auto-compaction. */
+/**
+ * What stands beside the context's percent: the conversation as it stands (the prompt the next request sends) against the size
+ * the percent is counted in, and what is left before the auto-compaction.
+ */
 const fillNote = (f: Facts, fill: Fill): string => {
   if (fill.tokens === null || fill.limit === null) return ''
-  const sizes = `${formatTokens(fill.tokens)} / ${formatTokens(fill.limit)}`
-  if (fill.isCompactAt) return `（${sizes}。あと約 ${formatTokens(Math.max(0, fill.limit - fill.tokens))} tok で自動要約）`
-  return f.isAutoCompactEnabled === false ? `（${sizes}。自動要約はオフ）` : `（${sizes}）`
+  const now = `いまの会話 ${formatTokens(fill.tokens)} tok`
+  if (fill.isCompactAt) {
+    return `（${now} / 自動要約の大きさ ${formatTokens(fill.limit)} tok。あと約 ${formatTokens(Math.max(0, fill.limit - fill.tokens))} tok で自動要約）`
+  }
+  return f.isAutoCompactEnabled === false
+    ? `（${now} / 窓 ${formatTokens(fill.limit)} tok。自動要約はオフ）`
+    : `（${now} / 窓 ${formatTokens(fill.limit)} tok）`
 }
 
 /** The state of the session in labelled rows: the pane draws them, the plain-text report prints them. */
@@ -59,19 +67,54 @@ export const statusRows = (f: Facts, savings?: Savings): Row[] => {
     value: f.contextPercent === null ? NONE : `${bar(fill.percent)} ${fill.percent}%${fillNote(f, fill)}`,
   })
 
-  rows.push({
-    label: '今回',
-    value:
-      f.last === null
-        ? NONE
-        : `${formatTokens(f.last.spent)} tok（入力 ${formatTokens(f.last.input + f.last.cacheWrite)} ・ 出力 ${formatTokens(f.last.output)}）` +
-          (f.last.cacheRead > 0 ? ` ＋ キャッシュ再利用 ${formatTokens(f.last.cacheRead)}` : ''),
-  })
+  // The last turn as the API counted it, in full, so that it can be priced: the prompt in the three kinds that are billed apart,
+  // and the output. A turn is several requests (each tool call is followed by another), every one sending the whole conversation,
+  // so these are sums over the requests: the cache read is the conversation read once per request.
+  if (f.last === null) {
+    rows.push({ label: '今回', value: NONE })
+  } else {
+    const t = f.last
+    const prompts = promptsOf(t)
+    const n = prompts.length
+    const sum = n > 1 ? `（${n} 回の合計）` : ''
+    if (n > 0) {
+      const first = exactTokens(prompts[0] ?? 0)
+      const last = exactTokens(prompts[n - 1] ?? 0)
+      rows.push({
+        label: '今回のリクエスト',
+        value: n === 1 ? `1 回（会話全体 ${first} tok を送った）` : `${n} 回（毎回、会話全体を送る。1回目 ${first} tok → 最後 ${last} tok）`,
+      })
+    }
+    rows.push({
+      label: '今回の入力',
+      value: `${exactTokens(promptTokens(t))} tok${sum} ＝ キャッシュ読み ${exactTokens(t.cacheRead)} ＋ キャッシュ書き込み ${exactTokens(t.cacheWrite)} ＋ キャッシュなし ${exactTokens(t.input)}`,
+    })
+    rows.push({ label: '今回の出力', value: `${exactTokens(t.output)} tok（${n > 1 ? `${n} 回の合計。` : ''}考えた分を含む）` })
+    rows.push({ label: '今回のモデル', value: t.model })
+  }
 
-  rows.push({
-    label: 'このセッション',
-    value: f.turns === 0 ? NONE : `${formatTokens(f.sessionTokens)} tok（${f.turns} ターン）`,
-  })
+  // The session so far, in the same kinds as the last turn: sums over every request of every turn since it began (or since /clear).
+  const session = sessionOf(f)
+  if (f.turns === 0) {
+    rows.push({ label: 'このセッション', value: NONE })
+  } else if (session.turns === 0) {
+    // Turns were taken before the totals were kept (the mod was reloaded from an older build), and none has ended since.
+    rows.push({ label: 'このセッション', value: `次のターンから数えます（これ以前の ${f.turns} ターンは含みません）` })
+  } else {
+    const scope =
+      `${session.turns} ターン` +
+      // Requests are named only where every turn had them counted.
+      (session.requestTurns === session.turns ? `・リクエスト ${session.requests} 回` : '') +
+      'の合計' +
+      // Turns from before this was counted (the mod was reloaded from an older build) have no breakdown.
+      (f.turns > session.turns ? `。これ以前の ${f.turns - session.turns} ターンは含みません` : '')
+    const prompt = session.input + session.cacheWrite + session.cacheRead
+    rows.push({
+      label: 'このセッションの入力',
+      value: `${exactTokens(prompt)} tok（${scope}） ＝ キャッシュ読み ${exactTokens(session.cacheRead)} ＋ キャッシュ書き込み ${exactTokens(session.cacheWrite)} ＋ キャッシュなし ${exactTokens(session.input)}`,
+    })
+    rows.push({ label: 'このセッションの出力', value: `${exactTokens(session.output)} tok（考えた分を含む）` })
+  }
 
   // The main loop's own turns are counted above; what subagents spent is counted, and kept apart, here.
   if (f.agentRuns > 0) {

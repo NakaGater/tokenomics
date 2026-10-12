@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { DEMO_SHORT } from '../hooks/lib/core/nudges'
 import { FACE } from '../hooks/lib/mascot'
 
-import { SURFACES, bandProps, engine, frameColor, measure, nudgeIn, phraseIn } from './kit'
+import { SURFACES, bandProps, engine, frameColor, measure, nudgeIn, phraseIn, runStep } from './kit'
 
 const USAGE = { input_tokens: 900, output_tokens: 300, cache_creation_input_tokens: 2000, cache_read_input_tokens: 2_100_000, model: 'm' }
 
@@ -33,7 +33,7 @@ test('a fresh session shows the context at 0% and an empty "this turn", and noth
   }
 })
 
-test('after a turn the band shows the fill and the fresh tokens, not the cache reads', async ($, on) => {
+test('after a turn the band shows the fill and the turn as the API counted it: the prompt with the cache’s share, and the output', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
 
@@ -42,8 +42,52 @@ test('after a turn the band shows the fill and the fresh tokens, not the cache r
 
   // 104k of the 160k the engine compacts at.
   expect(await ui.find({ type: 'Text', text: /65%/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '3.2k tok' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /2\.1M/ })).toBeUndefined()
+  // 900 uncached + 2,000 written + 2,100,000 read; the output on its own. Every kind is named and has its unit.
+  for (const text of ['入力 2.1M tok', '2.1M tok', '2k tok', '900 tok', '300 tok']) {
+    expect(await ui.find({ type: 'Text', text })).toBeDefined()
+  }
+  for (const label of ['今回', '出力', '└ キャッシュ読み', 'キャッシュ書き込み', 'キャッシュなし']) {
+    expect(await ui.find({ type: 'Text', text: label })).toBeDefined()
+  }
+  // The old sum (fresh input + writes + output) and the short names are no longer shown.
+  expect(await ui.find({ type: 'Text', text: '3.2k tok' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /読 |書 / })).toBeUndefined()
+})
+
+test('the band says how many requests the turn made, and that its figures are the turn’s total', async ($, on) => {
+  const options = { stepUsage: { input_tokens: 2, output_tokens: 700, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 1_000, model: 'm' } }
+  engine(on, options)
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+
+  // Two requests, the second sending the conversation the first left.
+  await runStep($ as never, { agentId: undefined })
+  options.stepUsage = { input_tokens: 2, output_tokens: 500, cache_read_input_tokens: 151_000, cache_creation_input_tokens: 2_000, model: 'm' }
+  await runStep($ as never, { agentId: undefined })
+  await finishTurn($ as never, { input_tokens: 4, output_tokens: 1_200, cache_read_input_tokens: 301_000, cache_creation_input_tokens: 3_000, model: 'm' })
+
+  expect(await ui.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'リクエスト' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '2 回' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '入力 304k tok' })).toBeDefined()
+
+  // The next turn starts the count over.
+  options.stepUsage = { input_tokens: 2, output_tokens: 50, cache_read_input_tokens: 153_000, cache_creation_input_tokens: 100, model: 'm' }
+  await runStep($ as never, { agentId: undefined })
+  await finishTurn($ as never, { input_tokens: 2, output_tokens: 50, cache_read_input_tokens: 153_000, cache_creation_input_tokens: 100, model: 'm' })
+  expect(await ui.find({ type: 'Text', text: '1 回' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '2 回' })).toBeUndefined()
+})
+
+test('a subagent’s steps are not the main turn’s requests', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+
+  await runStep($ as never, { agentId: 'sub-1' })
+  await runStep($ as never, { agentId: 'sub-1' })
+  await runStep($ as never)
+  await finishTurn($ as never)
+
+  expect(await ui.find({ type: 'Text', text: '1 回' })).toBeDefined()
 })
 
 test('a heavy conversation only changes the band’s look: the suggestion is a dialog of its own', async ($, on) => {
@@ -267,10 +311,12 @@ test('a suggestion that wraps makes the card taller; where the room is short of 
   await showNudge($ as never)
 
   // DEMO_SHORT is 78 cells: three rows in the 34 the card leaves at 56 columns, two at 100, one at 120. The card is six rows with one.
+  // The last turn's chips (the usage of finishTurn) take two rows where they fit side by side, as at 100 and 120 columns: a row more.
+  // In the 34 cells at 56 columns the first row's two chips (35 and 12 cells) and the cache's three (25, 25 and 22) stand one to a row: four more.
   const places = [
-    { bodyColumns: 56, rows: 8 },
-    { bodyColumns: 100, rows: 7 },
-    { bodyColumns: 120, rows: 6 },
+    { bodyColumns: 56, rows: 12 },
+    { bodyColumns: 100, rows: 8 },
+    { bodyColumns: 120, rows: 7 },
   ]
   for (const place of places) {
     const fits = await $.ui.mount({ ...bandProps({ bodyColumns: place.bodyColumns, maxRows: place.rows }), surface: 'terminal' })

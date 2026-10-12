@@ -8,6 +8,42 @@ export type TurnTokens = {
   cacheRead: number
   output: number
   model: string
+  /**
+   * What each model request of the turn sent, in order: its whole prompt (uncached + cache writes + cache reads), as the API
+   * counted it. Its length is the number of requests; empty when they were not counted.
+   */
+  prompts: readonly number[]
+}
+
+/** One model request of the main loop, as the API counted it, in the kinds that are billed apart. */
+export type RequestSize = {
+  input: number
+  cacheWrite: number
+  cacheRead: number
+  output: number
+  /**
+   * The request called the advisor. The advisor's own model call is not in the counts, and the main model's two passes around it
+   * are added up in them, so the prompt reads about twice the conversation.
+   */
+  isAdvisor: boolean
+}
+
+/** A request kept for the chart: which turn of the session it belonged to. */
+export type RequestUsage = RequestSize & { turn: number }
+
+/**
+ * What the session's turns have sent and received, as the API counted it: sums over their requests, in the kinds that are
+ * billed apart. `turns` is how many turns are in it, which is fewer than the session's where the mod was reloaded from a build
+ * that did not keep this; `requestTurns` is how many of those had their requests counted.
+ */
+export type SessionTotals = {
+  turns: number
+  requestTurns: number
+  requests: number
+  input: number
+  cacheWrite: number
+  cacheRead: number
+  output: number
 }
 
 /** The largest tool result of the current turn, when it is large enough to be worth a word. */
@@ -25,7 +61,10 @@ export type Facts = {
   costUsd: number | null
   rateLimits: RateLimit[]
   last: TurnTokens | null
-  sessionTokens: number
+  /** What the session's turns add up to; read through `sessionOf`, since a state kept from an older build lacks it. */
+  session: SessionTotals
+  /** The last requests of the main loop, oldest first, across turns; read through `recentOf`, since a state kept from an older build lacks it. */
+  recent: readonly RequestUsage[]
   turns: number
   bigOutput: BigOutput | null
   /** The context's size when a prompt came after a long pause: the cache may have lapsed, and the turn's usage will say. */

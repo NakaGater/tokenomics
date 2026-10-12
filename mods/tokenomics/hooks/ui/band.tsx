@@ -1,7 +1,7 @@
-import type { Facts } from '../../types'
+import type { Facts, TurnTokens } from '../../types'
 import { type Advice, THRESHOLDS, contextLevel, scaledPercent } from '../lib/advice'
 import { CAT_COLS, CAT_ROWS } from '../lib/cat'
-import { bar, formatTokens, formatUsd, limitLabel, wrappedRows } from '../lib/format'
+import { bar, cellWidth, formatTokens, formatUsd, limitLabel, promptTokens, promptsOf, wrappedRows } from '../lib/format'
 import { fillOf, fillTokens, gaugeCells } from '../lib/gauge'
 import { FACE, FACE_CELLS, FACE_STYLE, moodOf } from '../lib/mascot'
 import type { Offer } from '../lib/offers'
@@ -80,11 +80,14 @@ const gaugeColumnsFor = (columns: number): number =>
   Math.max(GAUGE_MIN_COLUMNS, Math.min(columns >= 90 ? 20 : 14, columns - CARD_SIDE_CELLS - GAUGE_ROW_CELLS))
 
 /**
- * Rows the card gains over its four when it carries a suggestion: the suggestion may wrap in the right column, and
- * advice, if there is any, keeps its row under it (without a suggestion, advice stands where the phrase does).
+ * Rows the card gains over its four: the last turn's chips take two rows or more (a dash, one, before there is a turn), more
+ * where the right column is too narrow for a row of them; and when it carries a suggestion, that may wrap in the right column,
+ * and advice, if there is any, keeps its row under it (without a suggestion, advice stands where the phrase does).
  */
-export const cardExtraRows = (nudge: string | null, hasAdvice: boolean, columns: number): number =>
-  nudge === null ? 0 : wrappedRows(nudge, columns - CARD_SIDE_CELLS) + (hasAdvice ? 1 : 0) - 1
+export const cardExtraRows = (nudge: string | null, hasAdvice: boolean, columns: number, turn: TurnTokens | null = null): number =>
+  (turn === null ? 0 : turnRows(turn, columns - CARD_SIDE_CELLS) - 1) +
+  (nudge === null ? 0 : wrappedRows(nudge, columns - CARD_SIDE_CELLS) + (hasAdvice ? 1 : 0) - 1)
+
 /**
  * What a suggestion's own card takes above the band: its frame, a title, a reason and what accepting does (each
  * may wrap) and its buttons. Counted generously, since a band taller than its room scrolls and could push
@@ -98,17 +101,83 @@ const levelColor = (level: 'ok' | 'notice' | 'warn'): 'warning' | 'error' | unde
 /** Below this, what agents spent is not worth a word in the band (it is always in the pane). */
 const AGENT_CHIP_TOKENS = 1_000
 
+type Chip = { label: string; value: string }
+
+const tok = (n: number): string => `${formatTokens(n)} tok`
+
+/**
+ * The last turn as the API counted it, in two rows of chips: the prompt whole, the output and how many requests the turn made (the
+ * figures are sums over them), then, under the prompt, what it was made of (the three kinds that are billed apart, which add up to it). Every kind is named in full and every count carries its unit.
+ */
+const turnChips = (t: TurnTokens): Chip[][] => [
+  [
+    { label: '今回（1ターンの合計）', value: `入力 ${tok(promptTokens(t))}` },
+    { label: '出力', value: tok(t.output) },
+    ...(promptsOf(t).length > 0 ? [{ label: 'リクエスト', value: `${promptsOf(t).length} 回` }] : []),
+  ],
+  [
+    { label: '└ キャッシュ読み', value: tok(t.cacheRead) },
+    { label: 'キャッシュ書き込み', value: tok(t.cacheWrite) },
+    { label: 'キャッシュなし', value: tok(t.input) },
+  ],
+]
+
+const CHIP_GAP = 2
+
+const chipCells = (c: Chip): number => cellWidth(c.label) + 1 + cellWidth(c.value)
+
+/** Rows a row of chips takes in `columns` cells: a chip that does not fit goes to the next row. */
+const flowRows = (chips: Chip[], columns: number): number => {
+  let rows = 1
+  let used = 0
+  for (const chip of chips) {
+    const cells = chipCells(chip)
+    if (used === 0) used = cells
+    else if (used + CHIP_GAP + cells <= columns) used += CHIP_GAP + cells
+    else {
+      rows += 1
+      used = cells
+    }
+  }
+  return rows
+}
+
+/** Rows the last turn's chips take in `columns` cells. */
+const turnRows = (t: TurnTokens, columns: number): number => turnChips(t).reduce((sum, row) => sum + flowRows(row, columns), 0)
+
+/** The last turn in the band: the chips above, or a dash before there has been one. */
+const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null }) => {
+  const { Box, Text } = p.ui
+  if (p.turn === null) {
+    return (
+      <Box gap={1}>
+        <Text dimColor>今回</Text>
+        <Text>—</Text>
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column">
+      {turnChips(p.turn).map(row => (
+        <Box key={row[0]?.label} gap={CHIP_GAP} flexWrap="wrap">
+          {row.map(chip => (
+            <Box key={chip.label} gap={1}>
+              <Text dimColor>{chip.label}</Text>
+              <Text>{chip.value}</Text>
+            </Box>
+          ))}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 /** The figures of a turn and of the account, beside the context: savings, dollars and limits only once they matter. */
 const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
   const { Box, Text } = ui
   const showCost = f.rateLimits.length === 0 && f.costUsd !== null && f.costUsd >= 1
   const limits = f.rateLimits.filter(r => r.percentUsed >= THRESHOLDS.limitNotice)
-  const rows = [
-    <Box gap={1}>
-      <Text dimColor>今回</Text>
-      <Text>{f.last === null ? '—' : `${formatTokens(f.last.spent)} tok`}</Text>
-    </Box>,
-  ]
+  const rows: ReturnType<typeof Box>[] = []
   // What agents spent for this turn is spent all the same, though the turn's own figure leaves it out.
   if (f.agentTokensThisTurn >= AGENT_CHIP_TOKENS) {
     rows.push(
@@ -164,6 +233,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
   const tokens = fillTokens(fill)
   const level = contextLevel(scaledPercent(f))
   const gaugeColumns = gaugeColumnsFor(p.columns)
+  const others = figures(p.ui, f, p.savedTokens, p.keptTokens)
 
   return (
     <Box borderStyle="round" borderColor={levelColor(level) ?? 'claude'} paddingX={1} gap={2}>
@@ -181,9 +251,12 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
           </Text>
           {tokens !== null && <Text>{tokens}</Text>}
         </Box>
-        <Box gap={2} flexWrap="wrap">
-          {figures(p.ui, f, p.savedTokens, p.keptTokens)}
-        </Box>
+        <TurnBlock ui={p.ui} turn={f.last} />
+        {others.length > 0 && (
+          <Box gap={2} flexWrap="wrap">
+            {others}
+          </Box>
+        )}
         {p.nudge !== null && <Text color="claude">{p.nudge}</Text>}
         {p.advice !== null && (
           <Box gap={2} flexWrap="wrap">
@@ -227,6 +300,7 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
           </Text>
           {tokens !== null && <Text>{tokens}</Text>}
         </Box>
+        <TurnBlock ui={p.ui} turn={f.last} />
         {figures(p.ui, f, p.savedTokens, p.keptTokens)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}
         <Button key="details" label="詳しく" onPress={p.onDetails} />
@@ -265,7 +339,7 @@ export const Band = (p: BandProps) => {
   // A one-line suggestion that wraps makes the card taller still, and then the plain row is the safer fit.
   const room = p.maxRows - (card !== null ? OFFER_CARD_ROWS : 0)
   const hasRoomForCard =
-    p.Raster !== null && p.columns >= CARD_MIN_COLUMNS && room >= CARD_ROWS + cardExtraRows(nudge, advice !== null, p.columns)
+    p.Raster !== null && p.columns >= CARD_MIN_COLUMNS && room >= CARD_ROWS + cardExtraRows(nudge, advice !== null, p.columns, p.facts.last)
 
   return (
     <Box flexDirection="column">

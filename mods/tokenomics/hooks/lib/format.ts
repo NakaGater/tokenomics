@@ -10,6 +10,18 @@ export const formatTokens = (n: number): string => {
 
 const trimZero = (s: string): string => s.replace(/\.0$/, '')
 
+/** 668265 -> "668,265": a count in full, for the figures that are read to be added up. */
+export const exactTokens = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+
+/**
+ * What each request of a turn sent, in order. A turn kept in the session's state from before the requests were counted (a mod
+ * reloaded in a running session keeps its state) has no such list: it reads as none counted.
+ */
+export const promptsOf = (t: TurnTokens): readonly number[] => (t as { prompts?: readonly number[] }).prompts ?? []
+
+/** The whole prompt a turn sent: what the API bills in three kinds (uncached input, cache writes and cache reads), together. */
+export const promptTokens = (t: TurnTokens): number => t.input + t.cacheWrite + t.cacheRead
+
 export const formatUsd = (n: number): string => `$${n.toFixed(2)}`
 
 /** `▓▓▓▓▓░░░░░` for 52 at width 10. */
@@ -53,13 +65,14 @@ export const turnTokens = (usage: {
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
   model: string
-}): TurnTokens => ({
+}, prompts: readonly number[] = []): TurnTokens => ({
   spent: usage.input_tokens + usage.cache_creation_input_tokens + usage.output_tokens,
   input: usage.input_tokens,
   cacheWrite: usage.cache_creation_input_tokens,
   cacheRead: usage.cache_read_input_tokens,
   output: usage.output_tokens,
   model: usage.model,
+  prompts,
 })
 
 /** "15:30" from an ISO timestamp, or undefined when it does not parse. */

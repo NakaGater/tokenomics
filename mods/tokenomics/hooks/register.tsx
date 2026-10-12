@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextBreakdown, SessionMessage, ToolCallResult, TurnUsage } from 'claude-code'
 
-import type { EffortSetting, Facts, HeavyItem, ModelRow, OfferKind, OpenOffer, Savings } from '../types'
+import type { EffortSetting, Facts, HeavyItem, ModelRow, OfferKind, OpenOffer, RequestSize, Savings } from '../types'
 
 import { THRESHOLDS, computeAdvice, nextAdvice } from './lib/advice'
 import { catCells, catPng } from './lib/cat'
@@ -90,6 +90,8 @@ let isOwnSwitch = false
 let isTurnRunning = false
 /** Tool calls the running turn has made; counted here, since the band need not redraw for each. */
 let toolsThisTurn = 0
+/** What each model request of the main loop's running turn used, in order. */
+let requestsThisTurn: RequestSize[] = []
 /** The turn running (or last run) was set going by something sent in, not by the person. */
 let isSentInTurn = false
 
@@ -1592,6 +1594,7 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     isTurnRunning = true
     toolsThisTurn = 0
+    requestsThisTurn = []
     sv.steer = steerTurn(sv.steer)
     nudgeCat($)
 
@@ -1618,9 +1621,11 @@ export const register: Register = (on, options) => {
     } else {
       isTurnRunning = false
       if (e.usage !== undefined) {
-        const turn = turnTokens(e.usage)
+        const requests = requestsThisTurn
+        const turn = turnTokens(e.usage, requests.map(r => r.input + r.cacheWrite + r.cacheRead))
+        requestsThisTurn = []
         const now = await $.clock.now()
-        await change($, f => applyTurn(f, turn, now, toolsThisTurn, e.answer.length, isSentInTurn))
+        await change($, f => applyTurn(f, turn, now, toolsThisTurn, e.answer.length, isSentInTurn, requests))
         // The first response measures what an empty session holds, which the cat's speed is counted from. The size the engine
         // auto-compacts at, which the gauge counts against, can change under us (/autocompact, a model switch): read again now and then.
         if ((await read($, facts)).baselineTokens === null || now - breakdownAt >= BREAKDOWN_EVERY_MS) await refreshUsage($, true)
@@ -1650,6 +1655,7 @@ export const register: Register = (on, options) => {
       if (isPerson(e.origin)) {
         isSentInTurn = false
         toolsThisTurn = 0
+        requestsThisTurn = []
         await change($, f => applyPrompt(f, now, THRESHOLDS.idleMs, THRESHOLDS.coldCacheContextTokens, e.text.length))
         // The person has gone on: a suggestion left on screen is for a moment that has passed.
         await closeOffer($)
@@ -1768,6 +1774,16 @@ export const register: Register = (on, options) => {
     const effort = cappedEffort(e.effort, cap)
 
     const step = yield* next(effort === undefined ? e : { ...e, effort })
+    // One request answered: the main loop's turn counts it, with the size of the prompt it sent.
+    if (e.agentId === undefined && step?.usage != null) {
+      requestsThisTurn.push({
+        input: step.usage.input_tokens,
+        cacheWrite: step.usage.cache_creation_input_tokens,
+        cacheRead: step.usage.cache_read_input_tokens,
+        output: step.usage.output_tokens,
+        isAdvisor: Array.isArray(step.serverToolUses) && step.serverToolUses.some(u => u.name === 'advisor'),
+      })
+    }
     await svStepped($, Array.isArray(step?.serverToolUses) && step.serverToolUses.some(u => u.name === 'advisor'))
 
     return step
@@ -2009,8 +2025,12 @@ export const register: Register = (on, options) => {
     const ctx = await offerContext($)
     const mutedKinds = await read($, muted)
 
+    const ui = $.ui.resolve(e)
+
     return Pane({
-      ui: $.ui.resolve(e),
+      ui,
+      Raster: e.surface === 'terminal' && 'Raster' in ui ? (ui as unknown as { Raster: RasterElement }).Raster : null,
+      bodyColumns: e.props.bodyColumns,
       facts: ctx.facts,
       advice: computeAdvice(ctx.facts),
       offers: standingOffers(ctx, mutedKinds),

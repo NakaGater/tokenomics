@@ -15,9 +15,11 @@ import {
   applyStep,
   applyTurn,
   initialFacts,
+  noSession,
   pruneDismissed,
+  sessionOf,
 } from '../hooks/lib/facts'
-import { bar, clockLabel, estimateTokens, formatTokens, turnTokens } from '../hooks/lib/format'
+import { bar, cellWidth, clockLabel, estimateTokens, exactTokens, formatTokens, promptTokens, promptsOf, turnTokens } from '../hooks/lib/format'
 import { buildHandoff, clearPointer, formatGit, handoffDir, handoffPath, hasWork, withGit, withPointer } from '../hooks/lib/handoff'
 import { heavyFrom } from '../hooks/lib/heavy'
 import { FACE, FACE_CELLS, moodOf } from '../hooks/lib/mascot'
@@ -26,6 +28,7 @@ import { OFFER_NAMES, computeOffers, nextOffer, pruneSeen, standingOffers } from
 import { isBoundaryCommand } from '../hooks/lib/signals'
 import { fillOf, fillTokens } from '../hooks/lib/gauge'
 import { report, statusRows } from '../hooks/lib/status'
+import { LABEL_CELLS } from '../hooks/ui/pane'
 
 const at = (percent: number, extra: Partial<Facts> = {}): Facts => ({
   ...initialFacts,
@@ -137,7 +140,8 @@ describe('facts', () => {
     const turn = turnTokens({ input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 9000, model: 'm' })
     const once = applyTurn(initialFacts, turn, 1000, 0, 0)
     const twice = applyTurn(once, turn, 2000, 0, 0)
-    expect(twice.sessionTokens).toBe(300)
+    // 100 + 100 uncached, 9,000 + 9,000 read, 50 + 50 out; no requests were counted for these.
+    expect(twice.session).toEqual({ turns: 2, requestTurns: 0, requests: 0, input: 200, cacheWrite: 0, cacheRead: 18_000, output: 100 })
     expect(twice.turns).toBe(2)
     expect(twice.endedAt).toBe(2000)
   })
@@ -193,10 +197,10 @@ describe('facts', () => {
   })
 
   test('/clear empties the conversation but keeps the money and the limits', () => {
-    const f = at(80, { costUsd: 3, sessionTokens: 9000, turns: 4, rateLimits: [{ kind: 'five_hour', percentUsed: 50 }] })
+    const f = at(80, { costUsd: 3, session: { ...noSession, turns: 4, output: 9000 }, turns: 4, rateLimits: [{ kind: 'five_hour', percentUsed: 50 }] })
     const cleared = applyCleared(f)
     expect(cleared.contextPercent).toBe(0)
-    expect(cleared.sessionTokens).toBe(0)
+    expect(cleared.session).toEqual(noSession)
     expect(cleared.turns).toBe(0)
     expect(cleared.costUsd).toBe(3)
     expect(cleared.rateLimits).toHaveLength(1)
@@ -252,6 +256,89 @@ describe('status', () => {
     expect(rows.find(r => r.label === 'コンテキスト')?.value).toBe('まだありません')
   })
 
+  test('the last turn is shown as the API counted it, in full, so that it adds up and can be priced', () => {
+    const turn = turnTokens({
+      input_tokens: 8,
+      output_tokens: 2_791,
+      cache_creation_input_tokens: 3_705,
+      cache_read_input_tokens: 668_265,
+      model: 'claude-sonnet-5-5',
+    })
+    expect(promptTokens(turn)).toBe(671_978)
+    const rows = statusRows({ ...at(40), last: turn })
+    const row = (label: string) => rows.find(r => r.label === label)?.value
+    expect(row('今回の入力')).toBe('671,978 tok ＝ キャッシュ読み 668,265 ＋ キャッシュ書き込み 3,705 ＋ キャッシュなし 8')
+    expect(row('今回の出力')).toBe('2,791 tok（考えた分を含む）')
+    expect(row('今回のモデル')).toBe('claude-sonnet-5-5')
+    // The old sum, which left the cache reads out, is gone: nothing stands for the turn but these three.
+    expect(rows.map(r => r.label)).not.toContain('今回')
+  })
+
+  test('the turn is shown as the sum of its requests: how many, what each sent, and the totals marked as sums', () => {
+    const turn = turnTokens(
+      { input_tokens: 4, output_tokens: 1_888, cache_creation_input_tokens: 2_206, cache_read_input_tokens: 382_666, model: 'claude-sonnet-5-5' },
+      [191_785, 193_091],
+    )
+    const rows = statusRows({ ...at(40), last: turn })
+    const row = (label: string) => rows.find(r => r.label === label)?.value
+    expect(row('今回のリクエスト')).toBe('2 回（毎回、会話全体を送る。1回目 191,785 tok → 最後 193,091 tok）')
+    expect(row('今回の入力')).toBe('384,876 tok（2 回の合計） ＝ キャッシュ読み 382,666 ＋ キャッシュ書き込み 2,206 ＋ キャッシュなし 4')
+    expect(row('今回の出力')).toBe('1,888 tok（2 回の合計。考えた分を含む）')
+
+    // One request: no "sum"; none counted (a reload in mid-turn): no request row.
+    const one = statusRows({ ...at(40), last: { ...turn, prompts: [191_785] } })
+    expect(one.find(r => r.label === '今回のリクエスト')?.value).toBe('1 回（会話全体 191,785 tok を送った）')
+    expect(one.find(r => r.label === '今回の出力')?.value).toBe('1,888 tok（考えた分を含む）')
+    expect(statusRows({ ...at(40), last: { ...turn, prompts: [] } }).map(r => r.label)).not.toContain('今回のリクエスト')
+  })
+
+  test('a turn kept from before the requests were counted still shows: no request row, no error', () => {
+    // A reloaded mod keeps the session's state, and its last turn was made by the build before.
+    const { prompts: _prompts, ...old } = turnTokens({ input_tokens: 8, output_tokens: 2_791, cache_creation_input_tokens: 3_705, cache_read_input_tokens: 668_265, model: 'm' })
+    const rows = statusRows({ ...at(40), last: old as never })
+    expect(rows.map(r => r.label)).not.toContain('今回のリクエスト')
+    expect(rows.find(r => r.label === '今回の入力')?.value).toBe('671,978 tok ＝ キャッシュ読み 668,265 ＋ キャッシュ書き込み 3,705 ＋ キャッシュなし 8')
+    expect(promptsOf(old as never)).toEqual([])
+  })
+
+  test('the session is shown in the same kinds as a turn: sums over every request of every turn', () => {
+    const turn = (n: number, prompts: number[]) =>
+      turnTokens({ input_tokens: 2 * n, output_tokens: 100 * n, cache_creation_input_tokens: 1_000 * n, cache_read_input_tokens: 50_000 * n, model: 'm' }, prompts)
+    let f = applyTurn(initialFacts, turn(1, [51_000]), 1000, 0, 0)
+    f = applyTurn(f, turn(2, [51_000, 52_000]), 2000, 0, 0)
+    const rows = statusRows(f)
+    const row = (label: string) => rows.find(r => r.label === label)?.value
+    expect(row('このセッションの入力')).toBe('153,006 tok（2 ターン・リクエスト 3 回の合計） ＝ キャッシュ読み 150,000 ＋ キャッシュ書き込み 3,000 ＋ キャッシュなし 6')
+    expect(row('このセッションの出力')).toBe('300 tok（考えた分を含む）')
+    expect(rows.map(r => r.label)).not.toContain('このセッション')
+
+    // Where a turn had no request counted, the count of requests is left out rather than short.
+    const partial = applyTurn(f, turn(1, []), 3000, 0, 0)
+    expect(statusRows(partial).find(r => r.label === 'このセッションの入力')?.value).toContain('（3 ターンの合計）')
+  })
+
+  test('a state kept from an older build has no session totals: its turns are said to be left out, and counting goes on', () => {
+    const { session: _session, ...older } = { ...initialFacts, turns: 30 }
+    const kept = older as unknown as Facts
+    expect(sessionOf(kept)).toEqual(noSession)
+    // Until a turn ends, it says so rather than "nothing yet".
+    expect(statusRows(kept).find(r => r.label === 'このセッション')?.value).toBe('次のターンから数えます（これ以前の 30 ターンは含みません）')
+    const next = applyTurn(kept, turnTokens({ input_tokens: 2, output_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1_000, model: 'm' }, [1_102]), 1, 0, 0)
+    expect(statusRows(next).find(r => r.label === 'このセッションの入力')?.value).toContain('（1 ターン・リクエスト 1 回の合計。これ以前の 30 ターンは含みません）')
+  })
+
+  test('every label of the status rows fits the label column of the pane, with room to spare', () => {
+    const turn = turnTokens({ input_tokens: 2, output_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1_000, model: 'm' }, [1_102])
+    const f = applyTurn({ ...at(40), agentRuns: 1, agentTokens: 5_000, costUsd: null, rateLimits: [{ kind: 'seven_day', percentUsed: 9 }] }, turn, 1, 0, 0)
+    const savings = { digests: 1, tokens: 1, milliUsd: 1, recovered: 0, forks: 1, keptTokens: 1, keptMilliUsd: 1, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, wouldFire: 1 }
+    const widest = Math.max(...statusRows(f, savings).map(r => cellWidth(r.label)))
+    expect(widest).toBeLessThanOrEqual(LABEL_CELLS - 2)
+  })
+
+  test('counts are written in full, with separators', () => {
+    expect([0, 8, 999, 1_000, 668_265, 4_934_632, 12_345_678].map(exactTokens)).toEqual(['0', '8', '999', '1,000', '668,265', '4,934,632', '12,345,678'])
+  })
+
   test('the plain-text report says what to do, or that nothing is needed', () => {
     expect(report(at(30), [], [])).toContain('今は何もしなくて大丈夫です')
     const heavy = { facts: at(80), modes: initialModes, modelRow: null }
@@ -302,15 +389,15 @@ describe('the gauge toward the auto-compaction', () => {
 
   test('the pane says what is left before the compaction, or that there is none to wait for', () => {
     const row = (f: Facts): string | undefined => statusRows(f).find(r => r.label === 'コンテキスト')?.value
-    expect(row(counting(120_000))).toContain('75%（120k / 160k。あと約 40k tok で自動要約）')
+    expect(row(counting(120_000))).toContain('75%（いまの会話 120k tok / 自動要約の大きさ 160k tok。あと約 40k tok で自動要約）')
     expect(row(counting(175_000))).toContain('あと約 0 tok で自動要約')
-    expect(row(counting(120_000, { isAutoCompactEnabled: false }))).toContain('60%（120k / 200k。自動要約はオフ）')
-    expect(row(counting(120_000, { isAutoCompactEnabled: null, autoCompactThreshold: null }))).toContain('60%（120k / 200k）')
+    expect(row(counting(120_000, { isAutoCompactEnabled: false }))).toContain('60%（いまの会話 120k tok / 窓 200k tok。自動要約はオフ）')
+    expect(row(counting(120_000, { isAutoCompactEnabled: null, autoCompactThreshold: null }))).toContain('60%（いまの会話 120k tok / 窓 200k tok）')
   })
 })
 
 describe('turns that something sent in set going', () => {
-  const turn = { spent: 1_000, input: 100, cacheWrite: 0, cacheRead: 5_000, output: 900, model: 'm' }
+  const turn = { spent: 1_000, input: 100, cacheWrite: 0, cacheRead: 5_000, output: 900, model: 'm', prompts: [] }
 
   test('an agent’s hand-back or a schedule says nothing of how small the person’s requests are: the streak stays', () => {
     const base = { ...initialFacts, lightStreak: 2, promptChars: 10 }
@@ -321,7 +408,7 @@ describe('turns that something sent in set going', () => {
     expect(applyTurn(base, turn, 1000, 9, 5_000, true).lightStreak).toBe(2)
     // It is still a turn, and its tokens are the session's.
     expect(applyTurn(base, turn, 1000, 0, 20, true).turns).toBe(1)
-    expect(applyTurn(base, turn, 1000, 0, 20, true).sessionTokens).toBe(1_000)
+    expect(applyTurn(base, turn, 1000, 0, 20, true).session.turns).toBe(1)
   })
 
   test('the pause before it still counts toward a lapsed cache; nothing else of the person’s prompt is touched', () => {
@@ -624,7 +711,7 @@ describe('offers', () => {
   test('"default" names no model: the model that answered says which tier it is', () => {
     const small = { contextTokens: 30_000, conversationTokens: 3_000, lightStreak: 3, contextPercent: 15, contextWindow: 200_000 }
     const row: ModelRow = { value: 'default', options: opus.options }
-    const answered = (model: string) => ({ spent: 1, input: 1, cacheWrite: 0, cacheRead: 0, output: 1, model })
+    const answered = (model: string) => ({ spent: 1, input: 1, cacheWrite: 0, cacheRead: 0, output: 1, model, prompts: [] })
     // The default has turned out to be Opus: both lighter ones are open.
     expect(computeOffers(ctx(at(15, { ...small, last: answered('claude-opus-5-5') }), { modelRow: row }))[0]?.target).toBe('sonnet')
     // The default is already Sonnet: only Haiku is lighter.

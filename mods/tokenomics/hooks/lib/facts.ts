@@ -1,6 +1,31 @@
-import type { BigOutput, Facts, RateLimit, TurnTokens } from '../../types'
+import type { BigOutput, Facts, RateLimit, RequestSize, RequestUsage, SessionTotals, TurnTokens } from '../../types'
 
 import { THRESHOLDS, computeAdvice, scaledPercent } from './advice'
+import { promptsOf } from './format'
+
+export const noSession: SessionTotals = { turns: 0, requestTurns: 0, requests: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0 }
+
+/** The session's totals; a state kept from a build before they were counted has none, and reads as nothing counted. */
+export const sessionOf = (f: Facts): SessionTotals => (f as { session?: SessionTotals }).session ?? noSession
+
+/** How many requests the chart keeps. */
+export const RECENT_REQUESTS = 10
+
+/** The last requests; a state kept from a build before they were kept has none. */
+export const recentOf = (f: Facts): readonly RequestUsage[] => (f as { recent?: readonly RequestUsage[] }).recent ?? []
+
+const withTurn = (s: SessionTotals, t: TurnTokens): SessionTotals => {
+  const requests = promptsOf(t).length
+  return {
+    turns: s.turns + 1,
+    requestTurns: s.requestTurns + (requests > 0 ? 1 : 0),
+    requests: s.requests + requests,
+    input: s.input + t.input,
+    cacheWrite: s.cacheWrite + t.cacheWrite,
+    cacheRead: s.cacheRead + t.cacheRead,
+    output: s.output + t.output,
+  }
+}
 
 export const initialFacts: Facts = {
   contextPercent: null,
@@ -11,7 +36,8 @@ export const initialFacts: Facts = {
   costUsd: null,
   rateLimits: [],
   last: null,
-  sessionTokens: 0,
+  session: noSession,
+  recent: [],
   turns: 0,
   bigOutput: null,
   pausedContext: null,
@@ -71,10 +97,13 @@ export const applyTurn = (
   answerChars: number,
   /** The turn was set going by something sent in (an agent's hand-back, a schedule), not by the person: it says nothing of how small their requests are. */
   isSentIn = false,
+  /** What each request of the turn sent, in order. */
+  requests: readonly RequestSize[] = [],
 ): Facts => ({
   ...f,
   last: turn,
-  sessionTokens: f.sessionTokens + turn.spent,
+  session: withTurn(sessionOf(f), turn),
+  recent: [...recentOf(f), ...requests.map(r => ({ ...r, turn: f.turns + 1 }))].slice(-RECENT_REQUESTS),
   turns: f.turns + 1,
   endedAt,
   lightStreak: isSentIn ? f.lightStreak : isLightTurn(f, tools, answerChars) ? f.lightStreak + 1 : 0,
@@ -159,7 +188,8 @@ export const applyCleared = (f: Facts): Facts => ({
   contextTokens: 0,
   conversationTokens: 0,
   last: null,
-  sessionTokens: 0,
+  session: noSession,
+  recent: [],
   turns: 0,
   agentTokens: 0,
   agentRuns: 0,

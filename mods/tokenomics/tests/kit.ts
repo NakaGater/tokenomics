@@ -120,6 +120,8 @@ type EngineOptions = {
   isGitBroken?: boolean
   /** The size the engine auto-compacts at, and who set it; a size under 400k is the default here, so no suggestion about it arises. */
   autoCompactWindow?: { threshold?: number; source?: string }
+  /** What the API reports for each model step the kit answers (read when the step is answered, so a test may change it between steps). */
+  stepUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model: string }
   /** More of what the breakdown lists: memory files, skills, MCP tools, agents, slash commands. */
   breakdownExtras?: Record<string, unknown>
   /** The conversation's own tokens, as the breakdown's Messages row says. */
@@ -366,7 +368,7 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
       answer: '',
       toolUses: [],
       stopReason: 'end_turn' as const,
-      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model },
+      usage: options.stepUsage ?? { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model },
     }
   })
 
@@ -457,7 +459,7 @@ export const nudgeIn = async (ui: TextFinder): Promise<string | undefined> =>
 
 /** What the cat's phrase says in the card: the dim Text that is not the label of a figure or a limit. */
 export const phraseIn = async (ui: TextFinder): Promise<string | undefined> =>
-  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|エージェント|節約|委任（推定）|累計|.*の上限)$/.test(t.text ?? ''))?.text
+  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|今回（1ターンの合計）|リクエスト|出力|└ キャッシュ読み|キャッシュ書き込み|キャッシュなし|エージェント|節約|委任（推定）|累計|.*の上限)$/.test(t.text ?? ''))?.text
 
 /** What the band says the digest has saved today: the figure beside the dim label "節約", or undefined where it says nothing. */
 export const savedIn = async (ui: TextFinder): Promise<string | undefined> => {

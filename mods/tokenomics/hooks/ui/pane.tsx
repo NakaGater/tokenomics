@@ -1,5 +1,6 @@
 import type { Facts, HeavyItem, OfferKind, Savings } from '../../types'
 import type { Advice } from '../lib/advice'
+import { RECENT_REQUESTS, recentOf } from '../lib/facts'
 import { formatTokens } from '../lib/format'
 import { FACE, FACE_CELLS, FACE_STYLE, moodForLevel } from '../lib/mascot'
 import type { ActiveSaving, SavingKey } from '../lib/modes'
@@ -8,10 +9,15 @@ import type { Demo } from '../lib/pace'
 import { NOTHING_TO_DO, statusRows } from '../lib/status'
 
 import { OfferView } from './offer'
-import type { Ui } from './ui'
+import { RequestChart } from './chart'
+import type { RasterElement, Ui } from './ui'
 
 export type PaneProps = {
   ui: Ui
+  /** The terminal's grid of colored cells, or null where there is none. */
+  Raster: RasterElement | null
+  /** Cells across the pane's body. */
+  bodyColumns: number
   facts: Facts
   /** Things worth knowing, with nothing to press. */
   advice: readonly Advice[]
@@ -56,6 +62,9 @@ const TIPS = [
   'モデルは会話の途中で変えない（キャッシュが無駄になります）。',
   '使っていない MCP サーバーは /mcp で無効にできます。',
 ]
+
+/** The label column of the status rows: the longest label ("このセッションの入力") and two cells of air. */
+export const LABEL_CELLS = 22
 
 /** Rows below which the tips are left out: what to do now matters more than the tips. */
 const ROOM_FOR_TIPS = 40
@@ -112,14 +121,23 @@ export const Pane = (p: PaneProps) => {
 
       <Box flexDirection="column">
         <Heading ui={p.ui}>いまの状態</Heading>
-        {statusRows(p.facts, p.savings).map(row => (
+        {statusRows(p.facts, p.savings)
+          // The chart below says what the requests of the turn were, one by one.
+          .filter(row => row.label !== '今回のリクエスト')
+          .map(row => (
           <Box gap={2}>
-            <Box width={16}>
+            <Box width={LABEL_CELLS}>
               <Text dimColor>{row.label}</Text>
             </Box>
             <Text>{row.value}</Text>
           </Box>
         ))}
+      </Box>
+
+      <Box flexDirection="column">
+        <Heading ui={p.ui}>{`直近 ${RECENT_REQUESTS} 回のリクエスト`}</Heading>
+        <Text dimColor>本体の呼び出しだけ（サブエージェントは含みません）。ターンをまたいで、左が古く右が新しい。</Text>
+        <RequestChart ui={p.ui} Raster={p.Raster} requests={recentOf(p.facts)} columns={p.bodyColumns} />
       </Box>
 
       <Box flexDirection="column">

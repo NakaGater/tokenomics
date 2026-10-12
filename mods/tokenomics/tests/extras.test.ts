@@ -190,7 +190,9 @@ describe('what subagents spend', () => {
     expect(await band.find({ type: 'Text', text: '20k tok' })).toBeDefined()
 
     await finish({ input_tokens: 4, output_tokens: 150, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 5_000, model: 'm' })
-    expect(await band.find({ type: 'Text', text: /1\.2k tok/ })).toBeDefined()
+    // 4 uncached + 1,000 written + 5,000 read; 150 out. The agents' 20k is not in it.
+    expect(await band.find({ type: 'Text', text: '入力 6k tok' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '150 tok' })).toBeDefined()
     expect(await band.find({ type: 'Text', text: '20k tok' })).toBeDefined()
 
     // A new prompt starts a new turn: its agents' tokens are counted from nothing.
