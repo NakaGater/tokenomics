@@ -85,6 +85,43 @@ export const applyMeasure = (f: Facts, m: Measure): Facts => {
 const isLightTurn = (f: Facts, tools: number, answerChars: number): boolean =>
   f.promptChars <= THRESHOLDS.lightPromptChars && tools <= THRESHOLDS.lightTools && answerChars <= THRESHOLDS.lightAnswerChars
 
+/** The chart's requests with this turn's: those it has already had put in by `applyRequest` are replaced, not added twice. */
+const withRequests = (f: Facts, requests: readonly RequestSize[]): readonly RequestUsage[] => {
+  const turn = f.turns + 1
+  return [...recentOf(f).filter(r => r.turn !== turn), ...requests.map(r => ({ ...r, turn }))].slice(-RECENT_REQUESTS)
+}
+
+/**
+ * A request of the running turn was answered, and `requests` are all it has had so far, in order. What the turn will be counted as
+ * when it ends is shown as far as it has got, so the band does not hold the last turn's figures through a long one: "this turn" is
+ * the sum of its requests, the chart has them, and the context is as large as the last prompt that was sent. The turn's end gives
+ * the API's own figures in place of these (`applyTurn`), and the engine's measure the context's.
+ *
+ * A request that called the advisor is left out of the context: its prompt adds the main model's two passes, so it reads about twice
+ * the conversation. The session's totals wait for the end of the turn, which adds the whole of it once.
+ */
+export const applyRequest = (f: Facts, requests: readonly RequestSize[], model: string): Facts => {
+  const sum = (pick: (r: RequestSize) => number): number => requests.reduce((total, r) => total + pick(r), 0)
+  const input = sum(r => r.input)
+  const cacheWrite = sum(r => r.cacheWrite)
+  const output = sum(r => r.output)
+  const sized = (r: RequestSize): number => r.input + r.cacheWrite + r.cacheRead
+  const withTurn: Facts = {
+    ...f,
+    last: { spent: input + cacheWrite + output, input, cacheWrite, cacheRead: sum(r => r.cacheRead), output, model, prompts: requests.map(sized) },
+    recent: withRequests(f, requests),
+    isLastRunning: true,
+  }
+  const latest = requests.filter(r => !r.isAdvisor).at(-1)
+  if (latest === undefined) return withTurn
+  const tokens = sized(latest)
+  if (f.contextWindow === null) return { ...withTurn, contextTokens: tokens }
+  return applyMeasure(withTurn, {
+    context: { tokens, window: f.contextWindow, percent: Math.min(100, Math.round((tokens / f.contextWindow) * 100)) },
+    rateLimits: f.rateLimits,
+  })
+}
+
 /**
  * A turn ended. Following a pause, its usage says whether the cache really lapsed: it wrote the
  * conversation back. `tools` is how many calls the turn made, counted outside the facts, and
@@ -103,8 +140,9 @@ export const applyTurn = (
 ): Facts => ({
   ...f,
   last: turn,
+  isLastRunning: false,
   session: withTurn(sessionOf(f), turn),
-  recent: [...recentOf(f), ...requests.map(r => ({ ...r, turn: f.turns + 1 }))].slice(-RECENT_REQUESTS),
+  recent: withRequests(f, requests),
   turns: f.turns + 1,
   endedAt,
   lightStreak: isSentIn ? f.lightStreak : isLightTurn(f, tools, answerChars) ? f.lightStreak + 1 : 0,
@@ -132,6 +170,7 @@ export const applySentIn = (f: Facts, now: number, minIdleMs: number, minContext
 export const applyPrompt = (f: Facts, now: number, minIdleMs: number, minContextTokens: number, promptChars: number): Facts => ({
   ...f,
   promptChars,
+  isLastRunning: false,
   agentTokensThisTurn: 0,
   // The first reply after a resume is the one that reads everything again; once a prompt is sent, it is under way.
   resumeCold: null,
@@ -189,6 +228,7 @@ export const applyCleared = (f: Facts): Facts => ({
   contextTokens: 0,
   conversationTokens: 0,
   last: null,
+  isLastRunning: false,
   session: noSession,
   recent: [],
   turns: 0,

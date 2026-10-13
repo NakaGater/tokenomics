@@ -61,6 +61,8 @@ export type Facts = {
   costUsd: number | null
   rateLimits: RateLimit[]
   last: TurnTokens | null
+  /** `last` is the running turn's, summed over the requests it has had so far, not a finished turn's; absent in a state kept from an older build. */
+  isLastRunning?: boolean
   /** What the session's turns add up to; read through `sessionOf`, since a state kept from an older build lacks it. */
   session: SessionTotals
   /** The last requests of the main loop, oldest first, across turns; read through `recentOf`, since a state kept from an older build lacks it. */

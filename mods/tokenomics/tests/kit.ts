@@ -210,12 +210,19 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
     calls.toasts.push(e.text)
     return { value: undefined }
   })
+  // The panes that are up, as `$.ui.panes()` lists them: opened and placed, not yet closed.
+  const up = new Map<string, string>()
+  on('ui.panes', () => ({
+    value: [...up].map(([id, title]) => ({ id, title, isShown: true, isFocused: false, isPlaced: true })),
+  }))
   on('ui.open', (_$, e) => {
+    if (options.isPlaced !== false) up.set(e.id, e.title ?? e.id)
     calls.opened.push(e.id)
     calls.openArgs.push({ id: e.id, title: e.title, focus: e.focus, closeOnEscape: e.closeOnEscape })
     return { value: options.isPlaced === false ? { isPlaced: false, reason: 'too-narrow' } : { isPlaced: true } }
   })
   on('ui.close', (_$, e) => {
+    up.delete(e.id)
     calls.closed.push(e.id)
     return { value: undefined }
   })

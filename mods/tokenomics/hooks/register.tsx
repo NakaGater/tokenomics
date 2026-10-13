@@ -15,6 +15,7 @@ import {
   applyConversation,
   applyMeasure,
   applyPrompt,
+  applyRequest,
   applyResume,
   applySentIn,
   applyStep,
@@ -392,6 +393,41 @@ const refreshUsage = async ($: Dollar, withBreakdown: boolean): Promise<void> =>
     }
   } catch {
     // The figures are a convenience: the band keeps what it has.
+  }
+}
+
+/** The pane's list of what is heavy is being made again, or is waiting to be: a second is not started over it. */
+let isHeavyPending = false
+
+/** The analysis pane is up where it can be seen (the list of what is heavy is in it, and nowhere else). */
+const isAnalysisUp = async ($: Dollar): Promise<boolean> => {
+  try {
+    return (await $.ui.panes()).some(pane => pane.id === PANE && pane.isPlaced)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * While the analysis pane is up, its list of what is heavy is made again after every reply, not only once a minute. Nothing here is
+ * waited for: the breakdown is a local estimate that sends nothing, but the end of a reply does not hang on how long it takes. It runs
+ * once the hook has returned, which also lets it see the reply that has just ended. One at a time, and none for a pane that is shut.
+ */
+const refreshHeavyLater = ($: Dollar): void => {
+  if (isHeavyPending) return
+  isHeavyPending = true
+  try {
+    $.clock.after(1, () => {
+      void (async () => {
+        try {
+          if (await isAnalysisUp($)) await refreshUsage($, true)
+        } finally {
+          isHeavyPending = false
+        }
+      })()
+    })
+  } catch {
+    isHeavyPending = false
   }
 }
 
@@ -1018,7 +1054,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.4'
+const MOD_VERSION = '0.6.6'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1759,6 +1795,7 @@ export const register: Register = (on, options) => {
         // The first response measures what an empty session holds, which the cat's speed is counted from. The size the engine
         // auto-compacts at, which the gauge counts against, can change under us (/autocompact, a model switch): read again now and then.
         if ((await read($, facts)).baselineTokens === null || now - breakdownAt >= BREAKDOWN_EVERY_MS) await refreshUsage($, true)
+        else refreshHeavyLater($)
       }
       nudgeCat($)
       await maybeOffer($)
@@ -1918,6 +1955,9 @@ export const register: Register = (on, options) => {
         output: step.usage.output_tokens,
         isAdvisor: Array.isArray(step.serverToolUses) && step.serverToolUses.some(u => u.name === 'advisor'),
       })
+      // The band and the pane follow the turn as it goes, not only when it ends (the engine measures once a turn).
+      const requests = requestsThisTurn
+      await change($, f => applyRequest(f, requests, e.model))
     }
     await svStepped($, e.agentId, step)
 

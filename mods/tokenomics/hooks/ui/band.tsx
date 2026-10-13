@@ -113,9 +113,9 @@ const tok = (n: number): string => `${formatTokens(n)} tok`
  * The last turn as the API counted it, in two rows of chips: the prompt whole, the output and how many requests the turn made (the
  * figures are sums over them), then, under the prompt, what it was made of (the three kinds that are billed apart, which add up to it). Every kind is named in full and every count carries its unit.
  */
-const turnChips = (t: TurnTokens): Chip[][] => [
+const turnChips = (t: TurnTokens, isRunning = false): Chip[][] => [
   [
-    { label: '今回（1ターンの合計）', value: `入力 ${tok(promptTokens(t))}` },
+    { label: isRunning ? '今回（途中の合計）' : '今回（1ターンの合計）', value: `入力 ${tok(promptTokens(t))}` },
     { label: '出力', value: tok(t.output) },
     ...(promptsOf(t).length > 0 ? [{ label: 'リクエスト', value: `${promptsOf(t).length} 回` }] : []),
   ],
@@ -147,10 +147,10 @@ const flowRows = (chips: Chip[], columns: number): number => {
 }
 
 /** Rows the last turn's chips take in `columns` cells. */
-const turnRows = (t: TurnTokens, columns: number): number => turnChips(t).reduce((sum, row) => sum + flowRows(row, columns), 0)
+const turnRows = (t: TurnTokens, columns: number, isRunning = false): number => turnChips(t, isRunning).reduce((sum, row) => sum + flowRows(row, columns), 0)
 
 /** The last turn in the band: the chips above, or a dash before there has been one. */
-const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null }) => {
+const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; isRunning: boolean }) => {
   const { Box, Text } = p.ui
   if (p.turn === null) {
     return (
@@ -162,7 +162,7 @@ const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null }) => {
   }
   return (
     <Box flexDirection="column">
-      {turnChips(p.turn).map(row => (
+      {turnChips(p.turn, p.isRunning).map(row => (
         <Box key={row[0]?.label} gap={CHIP_GAP} flexWrap="wrap">
           {row.map(chip => (
             <Box key={chip.label} gap={1}>
@@ -238,6 +238,12 @@ const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
 
 type PartProps = BandProps & { advice: Advice | null; nudge: string | null }
 
+/**
+ * The turn shown is the running one, summed over the requests it has had so far. The engine says a turn is running; the facts say
+ * the figures are that turn's. (The label is shorter than the finished turn's, so the room counted for the longer one holds.)
+ */
+const isRunning = (p: PartProps): boolean => p.isWorking && p.facts.isLastRunning === true
+
 /** The framed card: the cat on the left, the gauge and the figures to its right. */
 const Card = (p: PartProps & { Raster: RasterElement }) => {
   const { Box, Text, Button } = p.ui
@@ -265,7 +271,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
           </Text>
           {tokens !== null && <Text>{tokens}</Text>}
         </Box>
-        <TurnBlock ui={p.ui} turn={f.last} />
+        <TurnBlock ui={p.ui} turn={f.last} isRunning={isRunning(p)} />
         {others.length > 0 && (
           <Box gap={2} flexWrap="wrap">
             {others}
@@ -315,7 +321,7 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
           </Text>
           {tokens !== null && <Text>{tokens}</Text>}
         </Box>
-        <TurnBlock ui={p.ui} turn={f.last} />
+        <TurnBlock ui={p.ui} turn={f.last} isRunning={isRunning(p)} />
         {figures(p.ui, f, p.savedTokens, p.keptTokens)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}
         <Button key="analysis" label="詳しく分析" onPress={p.onAnalysis} />
