@@ -52,6 +52,7 @@ import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
 import { type MeasureId, armOf, failed, isTripped, modeOf, succeeded } from './lib/core/policy'
 import { freshState, resetConversation, resetSession, touch } from './lib/core/state'
 import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, steerTurn } from './lib/core/steer'
+import { readPathOf, requestShape, type StepShape } from './lib/core/shape'
 import { advisorMs, advisorRead, noteOpenedBy, noteWritten, subagentSpend } from './lib/core/spend'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
@@ -96,6 +97,8 @@ let isTurnRunning = false
 let toolsThisTurn = 0
 /** What each model request of the main loop's running turn used, in order. */
 let requestsThisTurn: RequestSize[] = []
+/** The same requests with what became of their tool calls (the last one is still being filled in while its calls run). */
+let stepShapes: StepShape[] = []
 /** The turn running (or last run) was set going by something sent in, not by the person. */
 let isSentInTurn = false
 
@@ -1056,7 +1059,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.6'
+const MOD_VERSION = '0.6.7'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1485,6 +1488,26 @@ const svExport = async ($: Dollar): Promise<string> => {
   return lines.join('\n')
 }
 
+/** One more call of the request being answered, by what became of it (the main conversation only). A call can arrive before its request is answered: the shape is opened when the request begins (`turn.step`). */
+const tallyCall = (what: 'readOnly' | 'refused'): void => {
+  const last = stepShapes[stepShapes.length - 1]
+  if (last !== undefined) last[what] += 1
+}
+
+/**
+ * A turn of the main conversation, by the shape of its requests: how many, how often the model already asks for several reads at
+ * once, and how many reads came one request at a time right after another read (an upper bound: the plugin cannot see whether the
+ * second depended on the first). Counts and sums only, one event for the turn; a turn that was cut off is counted as far as it went.
+ */
+const svShape = async ($: Dollar, steps: readonly StepShape[]): Promise<void> => {
+  try {
+    const n = requestShape(steps)
+    if (n !== null) await svRecord($, 'S', 'observe', 'signal', 'request_shape', n, true)
+  } catch {
+    // For looking back at; the turn goes on.
+  }
+}
+
 /**
  * A model step in which the advisor was asked: each call is counted, with what it read again (`advIn`, an estimate from the
  * step's own figures: the API keeps the advisor's tokens out of them, and its output is not told) and how long it took (`advMs`).
@@ -1763,6 +1786,7 @@ export const register: Register = (on, options) => {
     isTurnRunning = true
     toolsThisTurn = 0
     requestsThisTurn = []
+    stepShapes = []
     sv.steer = steerTurn(sv.steer)
     nudgeCat($)
 
@@ -1788,6 +1812,10 @@ export const register: Register = (on, options) => {
       }
     } else {
       isTurnRunning = false
+      // Whatever the turn's end: an interrupted turn or one an API error ended carries no usage, but the requests it made were made.
+      const shapes = stepShapes
+      stepShapes = []
+      await svShape($, shapes)
       if (e.usage !== undefined) {
         const requests = requestsThisTurn
         const turn = turnTokens(e.usage, requests.map(r => r.input + r.cacheWrite + r.cacheRead))
@@ -1825,6 +1853,7 @@ export const register: Register = (on, options) => {
         isSentInTurn = false
         toolsThisTurn = 0
         requestsThisTurn = []
+        stepShapes = []
         await change($, f => applyPrompt(f, now, THRESHOLDS.idleMs, THRESHOLDS.coldCacheContextTokens, e.text.length))
         // The person has gone on: a suggestion left on screen is for a moment that has passed.
         await closeOffer($)
@@ -1843,13 +1872,18 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     // Before anything is counted or run: a call turned back is neither.
     const note = await svSteer($, String(e.tool), e as unknown as Record<string, unknown>, e.agentId)
-    if (note !== undefined) return { deny: note }
+    if (note !== undefined) {
+      if (e.agentId === undefined) tallyCall('refused')
+      return { deny: note }
+    }
     try {
       await svWatchCall($, String(e.tool), e as unknown as Record<string, unknown>, e.agentId)
     } catch {
       // Only a note of what the call touches; the call goes ahead. (Not through the breaker: its successes would hide the digest's failures.)
     }
     const raw = await next(e)
+    // The engine's own word on whether the call only read (a refused one, or one a hook answered, never says so).
+    if (e.agentId === undefined && raw.deny === undefined && raw.isReadOnly === true) tallyCall('readOnly')
     await svLaunched($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
     await svNoteOpened($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
     await svForkStarted($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
@@ -1947,7 +1981,18 @@ export const register: Register = (on, options) => {
     }
     const effort = cappedEffort(e.effort, cap)
 
-    const step = yield* next(effort === undefined ? e : { ...e, effort })
+    // The engine starts a tool call while the response is still coming in: the call can arrive, and even end, before this step is
+    // answered. So the request's shape is opened now and its calls are counted into it as they come (the next request begins only
+    // after every call of this one has ended, so the last shape is always the request whose calls these are).
+    const shape: StepShape | null = e.agentId === undefined ? { prompt: 0, asked: 0, readOnly: 0, refused: 0, readPath: null } : null
+    if (shape !== null) stepShapes.push(shape)
+    let step: TurnStepResult | undefined
+    try {
+      step = yield* next(effort === undefined ? e : { ...e, effort })
+    } finally {
+      // A request that was never answered is no request.
+      if (shape !== null && step?.usage == null) stepShapes = stepShapes.filter(s => s !== shape)
+    }
     // One request answered: the main loop's turn counts it, with the size of the prompt it sent.
     if (e.agentId === undefined && step?.usage != null) {
       requestsThisTurn.push({
@@ -1957,6 +2002,11 @@ export const register: Register = (on, options) => {
         output: step.usage.output_tokens,
         isAdvisor: Array.isArray(step.serverToolUses) && step.serverToolUses.some(u => u.name === 'advisor'),
       })
+      if (shape !== null) {
+        shape.prompt = step.usage.input_tokens + step.usage.cache_creation_input_tokens + step.usage.cache_read_input_tokens
+        shape.asked = step.toolUses.length
+        shape.readPath = readPathOf(step.toolUses)
+      }
       // The band and the pane follow the turn as it goes, not only when it ends (the engine measures once a turn).
       const requests = requestsThisTurn
       await change($, f => applyRequest(f, requests, e.model))
