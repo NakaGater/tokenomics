@@ -1,6 +1,61 @@
 {
   "name": "tokenomics",
-  "version": "0.1.0",
-  "description": "Starter mod: registers /tokenomics and a status line entry.",
-  "author": { "name": "NakaGater" }
+  "version": "0.6.6",
+  "description": "Shows how much of the context a session has used, says what to do about it at the moment it helps, and quietly keeps big outputs and lighter subagents from costing more than they should.",
+  "author": { "name": "NakaGater" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "hud": {
+      "type": "boolean",
+      "title": "猫とバンドを表示する",
+      "description": "入力欄の上の猫・ゲージ・提案を表示します（ターミナルのみ）。オフでも、節約の仕組みは動きます。",
+      "default": true
+    },
+    "digest": {
+      "type": "string",
+      "title": "大きなコマンド出力を縮める",
+      "description": "auto: 縮めて渡し、全文はファイルに残す／observe: 縮めずに記録だけ／off: 何もしない",
+      "default": "auto",
+      "options": ["auto", "observe", "off"]
+    },
+    "delegation": {
+      "type": "string",
+      "title": "サブエージェントを軽くする",
+      "description": "auto: Explore を軽いモデルと低い effort で動かす／observe: 記録だけ／off: 何もしない",
+      "default": "observe",
+      "options": ["auto", "observe", "off"]
+    },
+    "steer": {
+      "type": "string",
+      "title": "調査・テスト・ログをスキルへ誘導する",
+      "description": "auto: モデル自身が検索を重ねたり（2 回目から）、テスト全体を流したり、長いログを読んだりしようとしたとき、止めて、軽いスキル（scout・test-summary・log-digest）を使えないか考えさせる（同じ呼び出しをもう一度すれば実行される。テストとログは毎回、検索は押し通すほど間隔を空けて）／observe: 止めるはずだった場面を記録だけ／off: 何もしない",
+      "default": "observe",
+      "options": ["auto", "observe", "off"]
+    },
+    "nudges": {
+      "type": "string",
+      "title": "一行の提案",
+      "description": "suggest: 返信のあとに一行で提案する（会話が重い／別件のようだ／キャッシュが切れた。何も入力はされません）／observe: 提案するはずだった場面を記録だけ／off: 何もしない",
+      "default": "observe",
+      "options": ["suggest", "observe", "off"]
+    },
+    "handoffNote": {
+      "type": "boolean",
+      "title": "会話が消える前にメモを残す（/clear・要約）",
+      "description": "/clear の直前と、要約（/compact・自動要約）の直前に、会話の要点（依頼・最後の回答・触ったファイル・実行したコマンド・git の状態）を一時フォルダのメモに書き、続きの会話には、その場所を一行だけ伝えます（読むのは、前の続きや足りない詳細が要るときだけ）。モデルは呼ばないので費用は 0 です。",
+      "default": true
+    },
+    "holdoutPercent": {
+      "type": "number",
+      "title": "何もしない人の割合（%）",
+      "description": "効果を測るため、この割合の人には節約の介入を一切しません（記録だけ）。通常は 0。",
+      "default": 0
+    },
+    "cacheTtlMinutes": {
+      "type": "number",
+      "title": "キャッシュの寿命（分）",
+      "description": "0 なら自動（API キーは 5 分、サブスクリプションは 60 分）。空き時間がこれを超えると、キャッシュが切れたとみなします。",
+      "default": 0
+    }
+  }
 }
