@@ -411,7 +411,9 @@ const isAnalysisUp = async ($: Dollar): Promise<boolean> => {
 /**
  * While the analysis pane is up, its list of what is heavy is made again after every reply, not only once a minute. Nothing here is
  * waited for: the breakdown is a local estimate that sends nothing, but the end of a reply does not hang on how long it takes. It runs
- * once the hook has returned, which also lets it see the reply that has just ended. One at a time, and none for a pane that is shut.
+ * once the hook has returned. That does not make the count whole: measured live, the breakdown at a reply's end still lacked part of
+ * that reply (about a third of a 400-line one) and took it in at the next reply's refresh; waiting 400 ms instead of 1 changed nothing,
+ * and why is not known. One at a time, and none for a pane that is shut.
  */
 const refreshHeavyLater = ($: Dollar): void => {
   if (isHeavyPending) return
