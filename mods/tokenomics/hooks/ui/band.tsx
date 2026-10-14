@@ -84,13 +84,16 @@ const gaugeColumnsFor = (columns: number): number =>
   Math.max(GAUGE_MIN_COLUMNS, Math.min(columns >= 90 ? 20 : 14, columns - CARD_SIDE_CELLS - GAUGE_ROW_CELLS))
 
 /**
- * Rows the card gains over its four: the last turn's chips take two rows or more (a dash, one, before there is a turn), more
- * where the right column is too narrow for a row of them; and when it carries a suggestion, that may wrap in the right column,
- * and advice, if there is any, keeps its row under it (without a suggestion, advice stands where the phrase does).
+ * Rows the card gains over the cat's four: its right column is the gauge's row (the figures, if any, stand beside the gauge), the
+ * last turn's chips (two rows or more, a dash, one, before there is a turn; more where the column is too narrow for a row of
+ * them), what is told beneath them and the buttons' row. What is told is a suggestion, which may wrap in the column, with advice
+ * under it if there is any, or advice alone; with neither, the cat's phrase stands beside the buttons and takes no row.
  */
-export const cardExtraRows = (nudge: string | null, hasAdvice: boolean, columns: number, turn: TurnTokens | null = null): number =>
-  (turn === null ? 0 : turnRows(turn, columns - CARD_SIDE_CELLS) - 1) +
-  (nudge === null ? 0 : wrappedRows(nudge, columns - CARD_SIDE_CELLS) + (hasAdvice ? 1 : 0) - 1)
+export const cardExtraRows = (nudge: string | null, hasAdvice: boolean, columns: number, turn: TurnTokens | null = null): number => {
+  const told = nudge === null ? (hasAdvice ? 1 : 0) : wrappedRows(nudge, columns - CARD_SIDE_CELLS) + (hasAdvice ? 1 : 0)
+  const chips = turn === null ? 1 : turnRows(turn, columns - CARD_SIDE_CELLS)
+  return Math.max(0, 2 + chips + told - CAT_ROWS)
+}
 
 /**
  * What a suggestion's own card takes above the band: its frame, a title, a reason and what accepting does (each
@@ -112,19 +115,26 @@ const tok = (n: number): string => `${formatTokens(n)} tok`
 /**
  * The last turn as the API counted it, in two rows of chips: the prompt whole, the output and how many requests the turn made (the
  * figures are sums over them), then, under the prompt, what it was made of (the three kinds that are billed apart, which add up to it). Every kind is named in full and every count carries its unit.
+ * The first chip says what the figures are a total of ("1ターンの合計", or so far); only where that makes the first row wrap and the bare
+ * "今回" would not, in the `columns` cells it has, the chip is called "今回" alone (the pane says the rest).
  */
-const turnChips = (t: TurnTokens, isRunning = false): Chip[][] => [
-  [
-    { label: isRunning ? '今回（途中の合計）' : '今回（1ターンの合計）', value: `入力 ${tok(promptTokens(t))}` },
+const turnChips = (t: TurnTokens, isRunning = false, columns?: number): Chip[][] => {
+  const first = (label: string): Chip[] => [
+    { label, value: `入力 ${tok(promptTokens(t))}` },
     { label: '出力', value: tok(t.output) },
     ...(promptsOf(t).length > 0 ? [{ label: 'リクエスト', value: `${promptsOf(t).length} 回` }] : []),
-  ],
-  [
-    { label: '└ キャッシュ読み', value: tok(t.cacheRead) },
-    { label: 'キャッシュ書き込み', value: tok(t.cacheWrite) },
-    { label: 'キャッシュなし', value: tok(t.input) },
-  ],
-]
+  ]
+  const full = first(isRunning ? '今回（途中の合計）' : '今回（1ターンの合計）')
+  const short = first('今回')
+  return [
+    columns !== undefined && flowRows(full, columns) > flowRows(short, columns) ? short : full,
+    [
+      { label: '└ キャッシュ読み', value: tok(t.cacheRead) },
+      { label: 'キャッシュ書き込み', value: tok(t.cacheWrite) },
+      { label: 'キャッシュなし', value: tok(t.input) },
+    ],
+  ]
+}
 
 const CHIP_GAP = 2
 
@@ -147,10 +157,10 @@ const flowRows = (chips: Chip[], columns: number): number => {
 }
 
 /** Rows the last turn's chips take in `columns` cells. */
-const turnRows = (t: TurnTokens, columns: number, isRunning = false): number => turnChips(t, isRunning).reduce((sum, row) => sum + flowRows(row, columns), 0)
+const turnRows = (t: TurnTokens, columns: number, isRunning = false): number => turnChips(t, isRunning, columns).reduce((sum, row) => sum + flowRows(row, columns), 0)
 
 /** The last turn in the band: the chips above, or a dash before there has been one. */
-const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; isRunning: boolean }) => {
+const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; isRunning: boolean; columns?: number }) => {
   const { Box, Text } = p.ui
   if (p.turn === null) {
     return (
@@ -162,8 +172,8 @@ const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; isRunning: boolean }) =
   }
   return (
     <Box flexDirection="column">
-      {turnChips(p.turn, p.isRunning).map(row => (
-        <Box key={row[0]?.label} gap={CHIP_GAP} flexWrap="wrap">
+      {turnChips(p.turn, p.isRunning, p.columns).map(row => (
+        <Box key={row[0]?.label} columnGap={CHIP_GAP} flexWrap="wrap">
           {row.map(chip => (
             <Box key={chip.label} gap={1}>
               <Text dimColor>{chip.label}</Text>
@@ -263,34 +273,32 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
         <Raster key="cat" columns={CAT_COLS} rows={CAT_ROWS} cells={p.cat.cells} />
       )}
       <Box flexDirection="column" flexGrow={1}>
-        <Box gap={1}>
-          <Text dimColor>コンテキスト</Text>
-          <Raster key="gauge" columns={gaugeColumns} rows={1} cells={gaugeCells(fill.percent, gaugeColumns)} />
-          <Text bold color={levelColor(level)}>
-            {fill.percent}%
-          </Text>
-          {tokens !== null && <Text>{tokens}</Text>}
-        </Box>
-        <TurnBlock ui={p.ui} turn={f.last} isRunning={isRunning(p)} />
-        {others.length > 0 && (
-          <Box gap={2} flexWrap="wrap">
-            {others}
+        <Box columnGap={2} flexWrap="wrap">
+          <Box gap={1}>
+            <Text dimColor>コンテキスト</Text>
+            <Raster key="gauge" columns={gaugeColumns} rows={1} cells={gaugeCells(fill.percent, gaugeColumns)} />
+            <Text bold color={levelColor(level)}>
+              {fill.percent}%
+            </Text>
+            {tokens !== null && <Text>{tokens}</Text>}
           </Box>
-        )}
+          {others}
+        </Box>
+        <TurnBlock ui={p.ui} turn={f.last} isRunning={isRunning(p)} columns={p.columns - CARD_SIDE_CELLS} />
         {p.nudge !== null && <Text color="claude">{p.nudge}</Text>}
         {p.advice !== null && (
-          <Box gap={2} flexWrap="wrap">
+          <Box columnGap={2} flexWrap="wrap">
             <Text bold color={p.advice.level === 'warn' ? 'error' : 'warning'}>
               {p.advice.title}
             </Text>
             <Button key="later" label="あとで" dimColor onPress={() => p.onLaterAdvice(p.advice?.id ?? '')} />
           </Box>
         )}
-        {p.nudge === null && p.advice === null && <Text dimColor>{p.cat.phrase}</Text>}
-        <Box gap={2} flexWrap="wrap">
+        <Box columnGap={2} flexWrap="wrap">
           <Button key="analysis" label="詳しく分析" onPress={p.onAnalysis} />
           <Button key="settings" label="設定" onPress={p.onSettings} />
           {p.tag !== null && <Text dimColor>{p.tag}</Text>}
+          {p.nudge === null && p.advice === null && <Text dimColor>{p.cat.phrase}</Text>}
         </Box>
       </Box>
     </Box>
@@ -308,7 +316,7 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
 
   return (
     <Box flexDirection="column">
-      <Box gap={2} flexWrap="wrap">
+      <Box columnGap={2} flexWrap="wrap">
         <Box width={FACE_CELLS}>
           <Text color={face.color} dimColor={face.dimColor}>
             {FACE[p.mood]}
@@ -333,7 +341,7 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
         </Box>
       )}
       {p.advice !== null && (
-        <Box gap={2} flexWrap="wrap" marginLeft={isNarrow ? 0 : FACE_CELLS + 2}>
+        <Box columnGap={2} flexWrap="wrap" marginLeft={isNarrow ? 0 : FACE_CELLS + 2}>
           <Text color={p.advice.level === 'warn' ? 'error' : 'warning'}>{p.advice.title}</Text>
           <Button key="later" label="あとで" dimColor onPress={() => p.onLaterAdvice(p.advice?.id ?? '')} />
         </Box>

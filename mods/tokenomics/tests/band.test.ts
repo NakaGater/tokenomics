@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { DEMO_SHORT } from '../hooks/lib/core/nudges'
+import { cardExtraRows } from '../hooks/ui/band'
 import { FACE } from '../hooks/lib/mascot'
 
 import { SURFACES, bandProps, engine, frameColor, measure, nudgeIn, phraseIn, runStep } from './kit'
@@ -311,10 +312,12 @@ test('a suggestion that wraps makes the card taller; where the room is short of 
   await showNudge($ as never)
 
   // DEMO_SHORT is 78 cells: three rows in the 34 the card leaves at 56 columns, two at 100, one at 120. The card is six rows with one.
-  // The last turn's chips (the usage of finishTurn) take two rows where they fit side by side, as at 100 and 120 columns: a row more.
-  // In the 34 cells at 56 columns the first row's two chips (35 and 12 cells) and the cache's three (25, 25 and 22) stand one to a row: four more.
+  // The last turn's chips (the usage of finishTurn) take two rows where they fit side by side, as at 100 and 120 columns.
+  // The card's right column is the gauge, the chips, the suggestion and the buttons, so two rows of chips and a one-line suggestion fill the cat's four and a row more.
+  // In the 34 cells at 56 columns the first row's two chips are 35 and 12 cells (the label saying what the figures total is long) and stand one to a row;
+  // with the label as "今回" alone they are 17 and 12 and stand side by side, and the cache's three (25, 25 and 22) stand one to a row: four rows of chips, five more.
   const places = [
-    { bodyColumns: 56, rows: 12 },
+    { bodyColumns: 56, rows: 11 },
     { bodyColumns: 100, rows: 8 },
     { bodyColumns: 120, rows: 7 },
   ]
@@ -328,6 +331,75 @@ test('a suggestion that wraps makes the card taller; where the room is short of 
     expect(await short.find({ type: 'Raster' })).toBeUndefined()
     expect(await nudgeIn(short)).toBe(DEMO_SHORT)
     await short.unmount()
+  }
+})
+
+// ── The card's rows ──
+
+const TURN = { input: 4, output: 107, cacheRead: 73_000, cacheWrite: 21_000, steps: [{ input: 4, output: 107, cacheRead: 73_000, cacheWrite: 21_000 }] } as never
+
+test('the cat’s phrase stands beside the buttons and takes no row of its own; a suggestion or advice does take one', () => {
+  // At 190 columns the chips of the last turn stand two rows and everything else one: the cat's four rows hold the card.
+  expect(cardExtraRows(null, false, 100, TURN)).toBe(0)
+  expect(cardExtraRows(null, false, 100, null)).toBe(0)
+  // Advice, or a one-line suggestion, is a row of its own beneath the chips: the card is a row taller than the cat.
+  expect(cardExtraRows(null, true, 100, TURN)).toBe(1)
+  expect(cardExtraRows(DEMO_SHORT, false, 120, TURN)).toBe(1)
+  // Advice under a suggestion is one more; a suggestion that wraps in the right column, as many more as it wraps.
+  expect(cardExtraRows(DEMO_SHORT, true, 120, TURN)).toBe(2)
+  expect(cardExtraRows(DEMO_SHORT, false, 100, TURN)).toBe(2)
+})
+
+test('the card’s wrapping boxes put no blank rows between the rows they wrap into: they have a gap between columns and none between rows', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount({ ...bandProps({ bodyColumns: 100 }), surface: 'terminal' })
+  await $.session.measure(measure.context(40))
+  await finishTurn($ as never)
+  const wrapping = (await ui.findAll({ type: 'Box' })).filter(b => b.props.flexWrap === 'wrap')
+  // The gauge's row, the two rows of the last turn's chips and the buttons' row.
+  expect(wrapping.length).toBeGreaterThanOrEqual(4)
+  for (const box of wrapping) {
+    expect(box.props.gap, 'a gap would also separate the rows').toBeUndefined()
+    expect(box.props.columnGap).toBeGreaterThan(0)
+  }
+})
+
+test('the card’s gauge row can carry the figures beside the gauge, and the buttons row ends in the cat’s phrase', async ($, on) => {
+  engine(on)
+  await $.session.measure(measure.context(40))
+  const ui = await $.ui.mount({ ...bandProps({ bodyColumns: 100 }), surface: 'terminal' })
+  type Node = { type: string; props: Record<string, unknown>; children?: (Node | string)[] }
+  const boxes = (await ui.findAll({ type: 'Box' })) as unknown as Node[]
+  const rows = boxes.filter(b => b.props.flexWrap === 'wrap')
+  const keysIn = (n: Node | string): string[] => (typeof n !== 'object' || n === null ? [] : [String(n.props?.key ?? ''), ...(n.children ?? []).flatMap(keysIn)])
+
+  // The gauge and what stands beside it are one wrapping row; the buttons and the phrase are another.
+  const gaugeRow = rows.find(r => keysIn(r).includes('gauge'))
+  expect(gaugeRow).toBeDefined()
+  expect(keysIn(gaugeRow as Node)).not.toContain('analysis')
+  const buttonsRow = rows.find(r => keysIn(r).includes('analysis'))
+  expect(keysIn(buttonsRow as Node)).toContain('settings')
+  const last = buttonsRow?.children?.at(-1) as Node
+  expect(last.type).toBe('Text')
+  expect(last.props.dimColor).toBe(true)
+})
+
+test('the first chip says "今回（1ターンの合計）" at ease, and "今回" alone only where that saves the first row a wrap', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount({ ...bandProps({ bodyColumns: 100 }), surface: 'terminal' })
+  await $.session.measure(measure.context(40))
+  await finishTurn($ as never)
+  // 78 cells for the chips: the label fits with the rest of the row.
+  expect(await ui.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeDefined()
+  await ui.unmount()
+
+  // The first row is 49 cells with the long label (35 and 12 and the gap) and 31 with the short one; 48 are left of a band 70 across.
+  const narrow = await $.ui.mount({ ...bandProps({ bodyColumns: 70 }), surface: 'terminal' })
+  expect(await narrow.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeUndefined()
+  expect(await narrow.find({ type: 'Text', text: '今回' })).toBeDefined()
+  // Everything else is named in full and has its unit.
+  for (const label of ['出力', '└ キャッシュ読み', 'キャッシュ書き込み', 'キャッシュなし']) {
+    expect(await narrow.find({ type: 'Text', text: label })).toBeDefined()
   }
 })
 
