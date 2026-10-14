@@ -62,7 +62,7 @@ describe('what carrying the conversation costs on every request', () => {
   })
 })
 
-test('the pane has the row, and the band a chip once a summary would make a difference', async ($, on) => {
+test('the pane has the row, and the band says nothing of it: the context gauge already says how big the conversation is', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as never)
 
@@ -70,14 +70,13 @@ test('the pane has the row, and the band a chip once a summary would make a diff
   await $.session.measure(measure.context(15, 1_000_000))
   for (const surface of SURFACES) {
     const band = await $.ui.mount({ ...bandProps(), surface })
-    const label = await band.find({ type: 'Text', text: '毎回' })
-    expect(label).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '150k tok を読み直し' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '毎回' })).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: '150k tok を読み直し' })).toBeUndefined()
     const pane = await $.ui.mount({ ...paneProps, surface })
     expect(await pane.find({ type: 'Text', text: '毎回の読み直し' })).toBeDefined()
   }
 
-  // A small conversation: the pane says what is carried, the band says nothing of it.
+  // A small conversation: the pane says what is carried too, and the band still says nothing of it.
   await $.session.measure(measure.context(3, 1_000_000))
   for (const surface of SURFACES) {
     const band = await $.ui.mount({ ...bandProps(), requestId: 'band-small', surface })

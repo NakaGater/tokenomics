@@ -508,7 +508,7 @@ export const nudgeIn = async (ui: TextFinder): Promise<string | undefined> =>
 
 /** What the cat's phrase says in the card: the dim Text that is not the label of a figure or a limit. */
 export const phraseIn = async (ui: TextFinder): Promise<string | undefined> =>
-  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|今回（1ターンの合計）|リクエスト|出力|└ キャッシュ読み|キャッシュ書き込み|キャッシュなし|エージェント|節約|委任（推定）|累計|.*の上限)$/.test(t.text ?? ''))?.text
+  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|今回|現在のターンの合計|リクエスト|出力|└ キャッシュ読み|キャッシュ書き込み|キャッシュなし|エージェント|節約|委任（推定）|累計|.*の上限)$/.test(t.text ?? ''))?.text
 
 /** What the band says the digest has saved today: the figure beside the dim label "節約", or undefined where it says nothing. */
 export const savedIn = async (ui: TextFinder): Promise<string | undefined> => {

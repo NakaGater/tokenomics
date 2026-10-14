@@ -47,7 +47,7 @@ test('after a turn the band shows the fill and the turn as the API counted it: t
   for (const text of ['入力 2.1M tok', '2.1M tok', '2k tok', '900 tok', '300 tok']) {
     expect(await ui.find({ type: 'Text', text })).toBeDefined()
   }
-  for (const label of ['今回', '出力', '└ キャッシュ読み', 'キャッシュ書き込み', 'キャッシュなし']) {
+  for (const label of ['現在のターンの合計', '出力', '└ キャッシュ読み', 'キャッシュ書き込み', 'キャッシュなし']) {
     expect(await ui.find({ type: 'Text', text: label })).toBeDefined()
   }
   // The old sum (fresh input + writes + output) and the short names are no longer shown.
@@ -66,7 +66,7 @@ test('the band says how many requests the turn made, and that its figures are th
   await runStep($ as never, { agentId: undefined })
   await finishTurn($ as never, { input_tokens: 4, output_tokens: 1_200, cache_read_input_tokens: 301_000, cache_creation_input_tokens: 3_000, model: 'm' })
 
-  expect(await ui.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '現在のターンの合計' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'リクエスト' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '2 回' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '入力 304k tok' })).toBeDefined()
@@ -314,7 +314,7 @@ test('a suggestion that wraps makes the card taller; where the room is short of 
   // DEMO_SHORT is 78 cells: three rows in the 34 the card leaves at 56 columns, two at 100, one at 120. The card is six rows with one.
   // The last turn's chips (the usage of finishTurn) take two rows where they fit side by side, as at 100 and 120 columns.
   // The card's right column is the gauge, the chips, the suggestion and the buttons, so two rows of chips and a one-line suggestion fill the cat's four and a row more.
-  // In the 34 cells at 56 columns the first row's two chips are 35 and 12 cells (the label saying what the figures total is long) and stand one to a row;
+  // In the 34 cells at 56 columns the first row's two chips are 32 and 12 cells (the label saying what the figures total is long) and stand one to a row;
   // with the label as "今回" alone they are 17 and 12 and stand side by side, and the cache's three (25, 25 and 22) stand one to a row: four rows of chips, five more.
   const places = [
     { bodyColumns: 56, rows: 11 },
@@ -384,18 +384,18 @@ test('the card’s gauge row can carry the figures beside the gauge, and the but
   expect(last.props.dimColor).toBe(true)
 })
 
-test('the first chip says "今回（1ターンの合計）" at ease, and "今回" alone only where that saves the first row a wrap', async ($, on) => {
+test('the first chip says "現在のターンの合計" at ease, and "今回" alone only where that saves the first row a wrap', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount({ ...bandProps({ bodyColumns: 100 }), surface: 'terminal' })
   await $.session.measure(measure.context(40))
   await finishTurn($ as never)
   // 78 cells for the chips: the label fits with the rest of the row.
-  expect(await ui.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '現在のターンの合計' })).toBeDefined()
   await ui.unmount()
 
-  // The first row is 49 cells with the long label (35 and 12 and the gap) and 31 with the short one; 48 are left of a band 70 across.
-  const narrow = await $.ui.mount({ ...bandProps({ bodyColumns: 70 }), surface: 'terminal' })
-  expect(await narrow.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeUndefined()
+  // The first row is 46 cells with the long label (32 and 12 and the gap) and 31 with the short one; 44 are left of a band 66 across.
+  const narrow = await $.ui.mount({ ...bandProps({ bodyColumns: 66 }), surface: 'terminal' })
+  expect(await narrow.find({ type: 'Text', text: '現在のターンの合計' })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: '今回' })).toBeDefined()
   // Everything else is named in full and has its unit.
   for (const label of ['出力', '└ キャッシュ読み', 'キャッシュ書き込み', 'キャッシュなし']) {

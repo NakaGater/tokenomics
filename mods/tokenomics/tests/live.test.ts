@@ -114,7 +114,7 @@ describe('a turn in progress, as the facts have it', () => {
 describe('a turn in progress, on screen', () => {
   const usageOf = (cacheRead: number) => ({ input_tokens: 2, output_tokens: 300, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: 900, model: 'm' })
 
-  test('the band grows request by request, before the turn ends, and says the figure is a turn’s so far', async ($, on) => {
+  test('the band grows request by request, before the turn ends, under the same name as when it is over', async ($, on) => {
     const options = { stepUsage: usageOf(100_000) }
     engine(on, options)
     await $.session.start(START)
@@ -126,8 +126,8 @@ describe('a turn in progress, on screen', () => {
 
     await runStep($ as never)
     expect(await band.find({ type: 'Text', text: /^101k\// })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '今回（途中の合計）' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: '現在のターンの合計' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '今回（途中の合計）' })).toBeUndefined()
     expect(await band.find({ type: 'Text', text: '1 回' })).toBeDefined()
 
     options.stepUsage = usageOf(120_000)
@@ -136,7 +136,7 @@ describe('a turn in progress, on screen', () => {
     expect(await band.find({ type: 'Text', text: '2 回' })).toBeDefined()
   })
 
-  test('the turn’s end gives the finished label, and the chart is in the pane without a request twice', async ($, on) => {
+  test('the turn’s end keeps the label, and the chart is in the pane without a request twice', async ($, on) => {
     const options = { stepUsage: usageOf(100_000) }
     engine(on, options)
     await $.session.start(START)
@@ -153,18 +153,8 @@ describe('a turn in progress, on screen', () => {
     expect((await pane.findAll({ type: 'Raster' })).length).toBe(6)
 
     const band = await $.ui.mount({ ...bandProps({ isWorking: false }), surface: 'terminal' })
-    expect(await band.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '現在のターンの合計' })).toBeDefined()
     expect(await band.find({ type: 'Text', text: '今回（途中の合計）' })).toBeUndefined()
-  })
-
-  test('where the engine says no turn is running the label is the finished one, whatever was left in the facts', async ($, on) => {
-    engine(on, { stepUsage: usageOf(100_000) })
-    await $.session.start(START)
-    await $.session.measure(measure.context(10))
-    await runStep($ as never)
-    // The turn was cut off: no end came, and the band is no longer told it is working.
-    const band = await $.ui.mount({ ...bandProps({ isWorking: false }), surface: 'terminal' })
-    expect(await band.find({ type: 'Text', text: '今回（1ターンの合計）' })).toBeDefined()
   })
 
   test('a subagent’s steps are not the conversation’s: the band does not move for them', async ($, on) => {
@@ -174,7 +164,7 @@ describe('a turn in progress, on screen', () => {
     const band = await $.ui.mount({ ...bandProps({ isWorking: true }), surface: 'terminal' })
     await runStep($ as never, { agentId: 'a1' })
     expect(await band.find({ type: 'Text', text: /^20k\// })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '今回（途中の合計）' })).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: '現在のターンの合計' })).toBeUndefined()
   })
 })
 

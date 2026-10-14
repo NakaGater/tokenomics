@@ -1,12 +1,10 @@
 import type { Facts, TurnTokens } from '../../types'
 import { type Advice, THRESHOLDS, contextLevel, scaledPercent } from '../lib/advice'
 import { CAT_COLS, CAT_ROWS } from '../lib/cat'
-import { HEAVY_NOTICE_TOKENS } from '../lib/core/economics'
 import { bar, cellWidth, formatTokens, formatUsd, limitLabel, promptTokens, promptsOf, wrappedRows } from '../lib/format'
 import { fillOf, fillTokens, gaugeCells } from '../lib/gauge'
 import { FACE, FACE_CELLS, FACE_STYLE, moodOf } from '../lib/mascot'
 import type { Offer } from '../lib/offers'
-import { stakeOf } from '../lib/stake'
 
 import { OfferView } from './offer'
 import type { ImageElement, RasterElement, Ui } from './ui'
@@ -115,16 +113,16 @@ const tok = (n: number): string => `${formatTokens(n)} tok`
 /**
  * The last turn as the API counted it, in two rows of chips: the prompt whole, the output and how many requests the turn made (the
  * figures are sums over them), then, under the prompt, what it was made of (the three kinds that are billed apart, which add up to it). Every kind is named in full and every count carries its unit.
- * The first chip says what the figures are a total of ("1ターンの合計", or so far); only where that makes the first row wrap and the bare
+ * The first chip says what the figures are a total of, "現在のターンの合計", whether the turn is under way (a total so far) or over; only where that makes the first row wrap and the bare
  * "今回" would not, in the `columns` cells it has, the chip is called "今回" alone (the pane says the rest).
  */
-const turnChips = (t: TurnTokens, isRunning = false, columns?: number): Chip[][] => {
+const turnChips = (t: TurnTokens, columns?: number): Chip[][] => {
   const first = (label: string): Chip[] => [
     { label, value: `入力 ${tok(promptTokens(t))}` },
     { label: '出力', value: tok(t.output) },
     ...(promptsOf(t).length > 0 ? [{ label: 'リクエスト', value: `${promptsOf(t).length} 回` }] : []),
   ]
-  const full = first(isRunning ? '今回（途中の合計）' : '今回（1ターンの合計）')
+  const full = first('現在のターンの合計')
   const short = first('今回')
   return [
     columns !== undefined && flowRows(full, columns) > flowRows(short, columns) ? short : full,
@@ -157,10 +155,10 @@ const flowRows = (chips: Chip[], columns: number): number => {
 }
 
 /** Rows the last turn's chips take in `columns` cells. */
-const turnRows = (t: TurnTokens, columns: number, isRunning = false): number => turnChips(t, isRunning, columns).reduce((sum, row) => sum + flowRows(row, columns), 0)
+const turnRows = (t: TurnTokens, columns: number): number => turnChips(t, columns).reduce((sum, row) => sum + flowRows(row, columns), 0)
 
 /** The last turn in the band: the chips above, or a dash before there has been one. */
-const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; isRunning: boolean; columns?: number }) => {
+const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; columns?: number }) => {
   const { Box, Text } = p.ui
   if (p.turn === null) {
     return (
@@ -172,7 +170,7 @@ const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; isRunning: boolean; col
   }
   return (
     <Box flexDirection="column">
-      {turnChips(p.turn, p.isRunning, p.columns).map(row => (
+      {turnChips(p.turn, p.columns).map(row => (
         <Box key={row[0]?.label} columnGap={CHIP_GAP} flexWrap="wrap">
           {row.map(chip => (
             <Box key={chip.label} gap={1}>
@@ -198,16 +196,6 @@ const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
       <Box gap={1}>
         <Text dimColor>エージェント</Text>
         <Text>{formatTokens(f.agentTokensThisTurn)} tok</Text>
-      </Box>,
-    )
-  }
-  // What every request carries, once a summary would make a difference to it.
-  const stake = stakeOf(f)
-  if (stake !== null && stake.isWorthSaying) {
-    rows.push(
-      <Box gap={1}>
-        <Text dimColor>毎回</Text>
-        <Text color={stake.tokens >= HEAVY_NOTICE_TOKENS ? 'warning' : undefined}>{`${formatTokens(stake.tokens)} tok を読み直し`}</Text>
       </Box>,
     )
   }
@@ -248,12 +236,6 @@ const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
 
 type PartProps = BandProps & { advice: Advice | null; nudge: string | null }
 
-/**
- * The turn shown is the running one, summed over the requests it has had so far. The engine says a turn is running; the facts say
- * the figures are that turn's. (The label is shorter than the finished turn's, so the room counted for the longer one holds.)
- */
-const isRunning = (p: PartProps): boolean => p.isWorking && p.facts.isLastRunning === true
-
 /** The framed card: the cat on the left, the gauge and the figures to its right. */
 const Card = (p: PartProps & { Raster: RasterElement }) => {
   const { Box, Text, Button } = p.ui
@@ -284,7 +266,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
           </Box>
           {others}
         </Box>
-        <TurnBlock ui={p.ui} turn={f.last} isRunning={isRunning(p)} columns={p.columns - CARD_SIDE_CELLS} />
+        <TurnBlock ui={p.ui} turn={f.last} columns={p.columns - CARD_SIDE_CELLS} />
         {p.nudge !== null && <Text color="claude">{p.nudge}</Text>}
         {p.advice !== null && (
           <Box columnGap={2} flexWrap="wrap">
@@ -329,7 +311,7 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
           </Text>
           {tokens !== null && <Text>{tokens}</Text>}
         </Box>
-        <TurnBlock ui={p.ui} turn={f.last} isRunning={isRunning(p)} />
+        <TurnBlock ui={p.ui} turn={f.last} />
         {figures(p.ui, f, p.savedTokens, p.keptTokens)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}
         <Button key="analysis" label="詳しく分析" onPress={p.onAnalysis} />

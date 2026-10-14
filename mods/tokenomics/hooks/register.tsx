@@ -1060,7 +1060,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.8'
+const MOD_VERSION = '0.6.9'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
