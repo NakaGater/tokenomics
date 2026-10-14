@@ -4,14 +4,14 @@ import { type ContextLevel, contextLevel, scaledPercent } from './advice'
 
 export type Mood = 'good' | 'heavy' | 'full' | 'busy'
 
-// A cat's face in text, for where the picture cannot go: a toast, the pane, a terminal too narrow for the card,
-// the desktop. Only narrow characters (halfwidth marks, ASCII): `•` and `ω` are "ambiguous" and take two cells
+// Clawd's face in text (arms, body, two eyes), for where the picture cannot go: a toast, the pane, a terminal too narrow for the
+// card, the desktop. Only narrow characters (halfwidth marks, ASCII): `•` and `ω` are "ambiguous" and take two cells
 // in terminals set for Japanese, which would push the whole row out of line.
 export const FACE: Record<Mood, string> = {
-  good: '(=･ｪ･=)',
-  heavy: '(=･_･;)',
-  full: '(=>_<;)',
-  busy: '(=-ｪ-=)',
+  good: '<[･_･]>',
+  heavy: '<[o_o]>',
+  full: '<[>_<]>',
+  busy: '<[-_-]>',
 }
 
 /** Cells of the widest face: the band reserves them, so the row does not shift when the face changes. */

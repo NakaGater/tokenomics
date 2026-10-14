@@ -192,6 +192,8 @@ declare module 'claude-code' {
       muted: OfferKind[]
       /** What the savings layer has done today, from its ledger. */
       savings: Savings
+      /** The same for this session only (since it began or was last cleared): the band's figure. */
+      sessionSavings: Savings
       /** The one-line suggestion made after the last reply, shown in the cat's card until the next prompt; null when none. */
       nudge: string | null
       /** The auto-compact size the person has stepped to or set in the pane; null until they do (the recommended one is shown). */

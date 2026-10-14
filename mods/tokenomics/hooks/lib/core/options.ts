@@ -5,7 +5,7 @@ export type Mode = 'off' | 'observe' | 'suggest' | 'auto'
 
 /** The mod's settings, as the `/config` menu holds them (plugin.json `userConfig`), after defaults and sanity. */
 export type CoreOptions = {
-  /** The cat, the band and the pane are drawn (terminal only). The savings below work without them. */
+  /** Clawd, the band and the pane are drawn (terminal only). The savings below work without them. */
   hud: boolean
   /** A1: big command output is cut down, its full text saved to a file. */
   digest: 'off' | 'observe' | 'auto'

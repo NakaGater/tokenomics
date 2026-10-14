@@ -20,6 +20,8 @@ export type CoreState = {
   /** The session, as a short hash. */
   sid: string
   ledger: Ledger
+  /** The events this process has recorded since the session began or was last cleared: what the band calls "the session" (`ledger` is every session's, today and before). */
+  mine: Ledger
   /** Events not yet written to the store. */
   pending: RawEvent[]
   breaker: Breaker
@@ -94,6 +96,7 @@ export const freshState = (options: CoreOptions): CoreState => ({
   arm: 'treat',
   sid: sessionKey('unknown'),
   ledger: emptyLedger,
+  mine: emptyLedger,
   pending: [],
   breaker: {},
   saveDir: '',
@@ -158,6 +161,7 @@ export const resetSession = (s: CoreState): void => {
   s.notes.clear()
   s.isBatchNoted = false
   s.batchGroup = null
+  s.mine = emptyLedger
   newWindow(s)
 }
 
@@ -180,6 +184,8 @@ export const resetConversation = (s: CoreState): void => {
   s.lastEndedAt = null
   s.lastIdleMs = null
   s.isColdTurn = false
+  // The band's session starts over with it (its tokens and turns do), and what was saved in the old one is no longer part of it.
+  s.mine = emptyLedger
   newWindow(s)
 }
 

@@ -1,6 +1,7 @@
-import type { Facts, TurnTokens } from '../../types'
+import type { Facts, SessionTotals, TurnTokens } from '../../types'
 import { type Advice, THRESHOLDS, contextLevel, scaledPercent } from '../lib/advice'
 import { CAT_COLS, CAT_ROWS } from '../lib/cat'
+import { liveSessionOf } from '../lib/facts'
 import { bar, cellWidth, formatTokens, formatUsd, limitLabel, promptTokens, promptsOf, wrappedRows } from '../lib/format'
 import { fillOf, fillTokens, gaugeCells } from '../lib/gauge'
 import { FACE, FACE_CELLS, FACE_STYLE, moodOf } from '../lib/mascot'
@@ -13,26 +14,25 @@ export type BandProps = {
   ui: Ui
   /** The terminal's cell grid, where the surface has one; without it the band is one plain row. */
   Raster: RasterElement | null
-  /** The terminal's picture element, when the cat is to be drawn as a picture; null draws it in cells. */
+  /** The terminal's picture element, when Clawd is to be drawn as a picture; null draws it in cells. */
   Image: ImageElement | null
   facts: Facts
-  /** The cat as it stands now, packed for a `Raster` and as a PNG (base64) for an `Image`, and what it is up to in a line. */
+  /** Clawd as it stands now, packed for a `Raster` and as a PNG (base64) for an `Image`, and what it is up to in a line. */
   cat: { cells: string; png: string | null; phrase: string }
   /** Something worth telling, with nothing to press, or null. */
   advice: Advice | null
   /**
-   * The one-line suggestion made after the last reply, or null. In the card it takes the place of the cat's phrase; in
+   * The one-line suggestion made after the last reply, or null. In the card it takes the place of Clawd's phrase; in
    * the plain row it is a row of its own. A suggestion's card hides it, and the next prompt clears it.
    */
   nudge: string | null
   /**
-   * Tokens the savings layer kept out today, over every session on this machine, all kinds added up in one figure: the output digest's
-   * cuts, the reading handed to the plugin's skills and agents (an estimate) and the outputs cut inside subagents. The pane says them
-   * apart ("今日の節約"); the band says the sum only once it is more than none. 0 for a person held back from the savings.
+   * Tokens the savings layer kept out in this session (since it began or was last cleared), all kinds added up in one figure: the
+   * output digest's cuts and the reading handed to the plugin's skills and agents (an estimate), each counted over the requests it
+   * spared, and the outputs cut inside subagents. The session's row always says it as "節約（延べ）" ("0 tok" while it is none); the pane
+   * says the kinds apart and the day's figure. 0 for a person held back from the savings.
    */
   savedTokens: number
-  /** What the figure is called: "節約", with "延べ" where it is counted over the requests and "推定含む" where an estimate is part of it. */
-  savedLabel: string
   /** A suggestion put in a card here, because no pane fits the terminal; null otherwise. */
   offer: Offer | null
   /** The mod is compacting at the person's request. */
@@ -55,17 +55,17 @@ export type BandProps = {
 }
 
 /**
- * Narrower than this, the cat and the numbers do not fit side by side: the band is one plain row. The card needs
- * its frame and padding (4), the cat (16), a gap (2) and the widest row, the gauge (at least 6) with its label, percent
+ * Narrower than this, Clawd and the numbers do not fit side by side: the band is one plain row. The card needs
+ * its frame and padding (4), Clawd (16), a gap (2) and the widest row, the gauge (at least 6) with its label, percent
  * and tokens (34 in all, see `GAUGE_ROW_CELLS`): 56 in all. A pane docked beside the transcript leaves the band about 56
  * on a terminal of 110 columns, so it is no more.
  */
 export const CARD_MIN_COLUMNS = 56
 
-/** The card is its frame and the cat's four rows. */
+/** The card is its frame and Clawd's five rows. */
 export const CARD_ROWS = CAT_ROWS + 2
 
-/** What the card takes beside its right column: the frame and padding (4), the cat (16) and the gap between (2). */
+/** What the card takes beside its right column: the frame and padding (4), Clawd (16) and the gap between (2). */
 const CARD_SIDE_CELLS = 4 + CAT_COLS + 2
 
 /**
@@ -80,15 +80,22 @@ const gaugeColumnsFor = (columns: number): number =>
   Math.max(GAUGE_MIN_COLUMNS, Math.min(columns >= 90 ? 20 : 14, columns - CARD_SIDE_CELLS - GAUGE_ROW_CELLS))
 
 /**
- * Rows the card gains over the cat's four: its right column is the gauge's row (the figures, if any, stand beside the gauge), the
- * last turn's chips (two rows or more, a dash, one, before there is a turn; more where the column is too narrow for a row of
- * them), what is told beneath them and the buttons' row. What is told is a suggestion, which may wrap in the column, with advice
- * under it if there is any, or advice alone; with neither, the cat's phrase stands beside the buttons and takes no row.
+ * Rows the card gains over Clawd's five: its right column is the gauge's row (the figures, if any, stand beside the gauge), the
+ * session's chips (`sessionRows`, one row or more), the last turn's chips (two rows or more, a dash, one, before there is a turn; more
+ * where the column is too narrow for a row of them), what is told beneath them and the buttons' row. What is told is a suggestion,
+ * which may wrap in the column, with advice under it if there is any, or advice alone; with neither, Clawd's phrase stands beside
+ * the buttons and takes no row.
  */
-export const cardExtraRows = (nudge: string | null, hasAdvice: boolean, columns: number, turn: TurnTokens | null = null): number => {
+export const cardExtraRows = (
+  nudge: string | null,
+  hasAdvice: boolean,
+  columns: number,
+  turn: TurnTokens | null = null,
+  sessionRows = 1,
+): number => {
   const told = nudge === null ? (hasAdvice ? 1 : 0) : wrappedRows(nudge, columns - CARD_SIDE_CELLS) + (hasAdvice ? 1 : 0)
   const chips = turn === null ? 1 : turnRows(turn, columns - CARD_SIDE_CELLS)
-  return Math.max(0, 2 + chips + told - CAT_ROWS)
+  return Math.max(0, 2 + sessionRows + chips + told - CAT_ROWS)
 }
 
 /**
@@ -104,9 +111,21 @@ const levelColor = (level: 'ok' | 'notice' | 'warn'): 'warning' | 'error' | unde
 /** Below this, what agents spent is not worth a word in the band (it is always in the pane). */
 const AGENT_CHIP_TOKENS = 1_000
 
-type Chip = { label: string; value: string }
+type Chip = { label: string; value: string; color?: 'success' }
 
 const tok = (n: number): string => `${formatTokens(n)} tok`
+
+/**
+ * A row of chips whose first chip names what the figures are a total of: the full name, or the short one only where that makes the
+ * row wrap and the short one would not, in the `columns` cells it has (the pane says the rest).
+ */
+const named = (chips: (label: string) => Chip[], full: string, short: string, columns?: number): Chip[] => {
+  const long = chips(full)
+  if (columns === undefined) return long
+  const bare = chips(short)
+
+  return flowRows(long, columns) > flowRows(bare, columns) ? bare : long
+}
 
 /**
  * The last turn as the API counted it, in two rows of chips: the prompt whole, the output and how many requests the turn made (the
@@ -120,10 +139,8 @@ const turnChips = (t: TurnTokens, columns?: number): Chip[][] => {
     { label: '出力', value: tok(t.output) },
     ...(promptsOf(t).length > 0 ? [{ label: 'リクエスト', value: `${promptsOf(t).length} 回` }] : []),
   ]
-  const full = first('現在のターンの合計')
-  const short = first('今回')
   return [
-    columns !== undefined && flowRows(full, columns) > flowRows(short, columns) ? short : full,
+    named(first, '現在のターンの合計', '今回', columns),
     [
       { label: '└ キャッシュ読み', value: tok(t.cacheRead) },
       { label: 'キャッシュ書き込み', value: tok(t.cacheWrite) },
@@ -132,11 +149,34 @@ const turnChips = (t: TurnTokens, columns?: number): Chip[][] => {
   ]
 }
 
+/**
+ * The session so far, in one row of chips, below the context: the prompt whole, the output, the requests and the turns (sums over
+ * the turns, the one under way included) and what the savings layer has spared the requests ("節約（延べ）", all kinds added up; "0 tok"
+ * until something is kept out, and in green once it is). The requests are named only where every turn had them counted; before a turn is counted a dash stands for them.
+ * The first chip says what the figures are a total of, "現在のセッションの合計", or "セッション" alone where that saves the row a wrap.
+ */
+const sessionChips = (s: SessionTotals, savedTokens: number, columns?: number): Chip[] => {
+  const saved: Chip =
+    savedTokens > 0 ? { label: '節約（延べ）', value: `約 ${formatTokens(savedTokens)} tok`, color: 'success' } : { label: '節約（延べ）', value: '0 tok' }
+  const row = (label: string): Chip[] =>
+    s.turns === 0
+      ? [{ label, value: '—' }, saved]
+      : [
+          { label, value: `入力 ${tok(s.input + s.cacheWrite + s.cacheRead)}` },
+          { label: '出力', value: tok(s.output) },
+          ...(s.requestTurns === s.turns ? [{ label: 'リクエスト', value: `${s.requests} 回` }] : []),
+          { label: 'ターン', value: `${s.turns} 回` },
+          saved,
+        ]
+
+  return named(row, '現在のセッションの合計', 'セッション', columns)
+}
+
 const CHIP_GAP = 2
 
 const chipCells = (c: Chip): number => cellWidth(c.label) + 1 + cellWidth(c.value)
 
-/** Rows a row of chips takes in `columns` cells: a chip that does not fit goes to the next row. */
+/** Rows a row of chips takes in `columns` cells: a chip that does not fit goes to the next row, and one wider than the row wraps itself. */
 const flowRows = (chips: Chip[], columns: number): number => {
   let rows = 1
   let used = 0
@@ -148,12 +188,31 @@ const flowRows = (chips: Chip[], columns: number): number => {
       rows += 1
       used = cells
     }
+    if (cells > columns && columns > 0) {
+      rows += Math.ceil(cells / columns) - 1
+      used = columns
+    }
   }
   return rows
 }
 
 /** Rows the last turn's chips take in `columns` cells. */
 const turnRows = (t: TurnTokens, columns: number): number => turnChips(t, columns).reduce((sum, row) => sum + flowRows(row, columns), 0)
+
+/** A row of chips: each a dim name and its figure, wrapping where the row is too narrow. */
+const ChipRow = (p: { ui: Ui; chips: Chip[] }) => {
+  const { Box, Text } = p.ui
+  return (
+    <Box columnGap={CHIP_GAP} flexWrap="wrap">
+      {p.chips.map(chip => (
+        <Box key={chip.label} gap={1}>
+          <Text dimColor>{chip.label}</Text>
+          <Text color={chip.color}>{chip.value}</Text>
+        </Box>
+      ))}
+    </Box>
+  )
+}
 
 /** The last turn in the band: the chips above, or a dash before there has been one. */
 const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; columns?: number }) => {
@@ -169,21 +228,22 @@ const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; columns?: number }) => 
   return (
     <Box flexDirection="column">
       {turnChips(p.turn, p.columns).map(row => (
-        <Box key={row[0]?.label} columnGap={CHIP_GAP} flexWrap="wrap">
-          {row.map(chip => (
-            <Box key={chip.label} gap={1}>
-              <Text dimColor>{chip.label}</Text>
-              <Text>{chip.value}</Text>
-            </Box>
-          ))}
-        </Box>
+        <ChipRow key={row[0]?.label} ui={p.ui} chips={row} />
       ))}
     </Box>
   )
 }
 
-/** The figures of a turn and of the account, beside the context: savings, dollars and limits only once they matter. */
-const figures = (ui: Ui, f: Facts, savedTokens: number, savedLabel: string) => {
+/** The session so far, below the context. */
+const SessionBlock = (p: { ui: Ui; facts: Facts; savedTokens: number; columns?: number }) => (
+  <ChipRow ui={p.ui} chips={sessionChips(liveSessionOf(p.facts), p.savedTokens, p.columns)} />
+)
+
+/** Rows the session's chips take in `columns` cells. */
+const sessionRowsOf = (f: Facts, savedTokens: number, columns: number): number => flowRows(sessionChips(liveSessionOf(f), savedTokens, columns), columns)
+
+/** The figures of the account, beside the context: dollars and limits only once they matter, and what agents spent. */
+const figures = (ui: Ui, f: Facts) => {
   const { Box, Text } = ui
   const showCost = f.rateLimits.length === 0 && f.costUsd !== null && f.costUsd >= 1
   const limits = f.rateLimits.filter(r => r.percentUsed >= THRESHOLDS.limitNotice)
@@ -194,14 +254,6 @@ const figures = (ui: Ui, f: Facts, savedTokens: number, savedLabel: string) => {
       <Box gap={1}>
         <Text dimColor>エージェント</Text>
         <Text>{formatTokens(f.agentTokensThisTurn)} tok</Text>
-      </Box>,
-    )
-  }
-  if (savedTokens > 0) {
-    rows.push(
-      <Box gap={1}>
-        <Text dimColor>{savedLabel}</Text>
-        <Text color="success">{`約 ${formatTokens(savedTokens)} tok`}</Text>
       </Box>,
     )
   }
@@ -226,7 +278,7 @@ const figures = (ui: Ui, f: Facts, savedTokens: number, savedLabel: string) => {
 
 type PartProps = BandProps & { advice: Advice | null; nudge: string | null }
 
-/** The framed card: the cat on the left, the gauge and the figures to its right. */
+/** The framed card: Clawd on the left, the gauge and the figures to its right. */
 const Card = (p: PartProps & { Raster: RasterElement }) => {
   const { Box, Text, Button } = p.ui
   const { Raster, Image } = p
@@ -235,7 +287,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
   const tokens = fillTokens(fill)
   const level = contextLevel(scaledPercent(f))
   const gaugeColumns = gaugeColumnsFor(p.columns)
-  const others = figures(p.ui, f, p.savedTokens, p.savedLabel)
+  const others = figures(p.ui, f)
 
   return (
     <Box borderStyle="round" borderColor={levelColor(level) ?? 'claude'} paddingX={1} gap={2}>
@@ -256,6 +308,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
           </Box>
           {others}
         </Box>
+        <SessionBlock ui={p.ui} facts={f} savedTokens={p.savedTokens} columns={p.columns - CARD_SIDE_CELLS} />
         <TurnBlock ui={p.ui} turn={f.last} columns={p.columns - CARD_SIDE_CELLS} />
         {p.nudge !== null && <Text color="claude">{p.nudge}</Text>}
         {p.advice !== null && (
@@ -277,7 +330,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
   )
 }
 
-/** One row: the cat's face, the fill and the last turn's tokens; where there is no picture, or no room for one. */
+/** One row: Clawd's face, the fill and the last turn's tokens; where there is no picture, or no room for one. */
 const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
   const { Box, Text, Button } = p.ui
   const f = p.facts
@@ -301,8 +354,9 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
           </Text>
           {tokens !== null && <Text>{tokens}</Text>}
         </Box>
+        <SessionBlock ui={p.ui} facts={f} savedTokens={p.savedTokens} />
         <TurnBlock ui={p.ui} turn={f.last} />
-        {figures(p.ui, f, p.savedTokens, p.savedLabel)}
+        {figures(p.ui, f)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}
         <Button key="analysis" label="詳しく分析" onPress={p.onAnalysis} />
         <Button key="settings" label="設定" onPress={p.onSettings} />
@@ -337,11 +391,13 @@ export const Band = (p: BandProps) => {
   const mood = moodOf(p.facts, card ?? advice, p.isCompacting)
   const part = { ...p, advice, nudge }
   const { Box } = p.ui
-  // The card of the cat is tall: where it, and a suggestion above it, would not fit the room, the plain row goes under the suggestion.
+  // Clawd's card is tall: where it, and a suggestion above it, would not fit the room, the plain row goes under the suggestion.
   // A one-line suggestion that wraps makes the card taller still, and then the plain row is the safer fit.
   const room = p.maxRows - (card !== null ? OFFER_CARD_ROWS : 0)
   const hasRoomForCard =
-    p.Raster !== null && p.columns >= CARD_MIN_COLUMNS && room >= CARD_ROWS + cardExtraRows(nudge, advice !== null, p.columns, p.facts.last)
+    p.Raster !== null &&
+    p.columns >= CARD_MIN_COLUMNS &&
+    room >= CARD_ROWS + cardExtraRows(nudge, advice !== null, p.columns, p.facts.last, sessionRowsOf(p.facts, p.savedTokens, p.columns - CARD_SIDE_CELLS))
 
   return (
     <Box flexDirection="column">

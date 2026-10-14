@@ -3,13 +3,13 @@ import type { Facts } from '../../types'
 import { contextLevel, scaledPercent } from './advice'
 import { FRAMES, type Look, PICTURES } from './cat'
 
-/** The conversation, grown past what an empty session holds, wakes the cat at this size. */
+/** The conversation, grown past what an empty session holds, wakes Clawd at this size. */
 export const WAKE_TOKENS = 20_000
-/** The cat is at full speed when the conversation has grown this large (less, in a smaller window). */
+/** Clawd is at full speed when the conversation has grown this large (less, in a smaller window). */
 export const FULL_TOKENS = 200_000
 /** What an empty session holds, until the real figure is read from the breakdown. */
 export const BASELINE_FALLBACK = 25_000
-/** Without a word from the person for this long the cat curls up, and nothing is redrawn until they are back. */
+/** Without a word from the person for this long Clawd curls up, and nothing is redrawn until they are back. */
 export const IDLE_SLEEP_MS = 5 * 60_000
 
 /** Milliseconds between frames: a stroll, and a sprint. */
@@ -20,7 +20,7 @@ const JUMP_PERIOD_MS = 90
 /** Frames a jump plays: twice round its pictures (four times round the cells' four). */
 export const JUMP_STEPS = PICTURES.jump * 2
 
-/** What the cat does at a glance, for the pane's demonstration. */
+/** What Clawd does at a glance, for the pane's demonstration. */
 export type Demo = 'sleep' | 'walk' | 'trot' | 'run' | 'sprint' | 'sweat' | 'jump'
 
 export const DEMO_SPEED: Record<Exclude<Demo, 'sleep' | 'jump'>, number> = { walk: 0.1, trot: 0.35, run: 0.65, sprint: 1, sweat: 1 }
@@ -31,7 +31,7 @@ export const DEMO_MS = 12_000
 /** Tokens the conversation has added to what an empty session holds. */
 export const growthOf = (f: Facts): number => Math.max(0, (f.contextTokens ?? 0) - (f.baselineTokens ?? BASELINE_FALLBACK))
 
-/** The size at which the cat runs flat out: 200k, or what the window leaves if that is less. */
+/** The size at which Clawd runs flat out: 200k, or what the window leaves if that is less. */
 export const fullTokensOf = (f: Facts): number =>
   Math.max(WAKE_TOKENS * 2, Math.min(FULL_TOKENS, (f.contextWindow ?? FULL_TOKENS) - (f.baselineTokens ?? BASELINE_FALLBACK)))
 
@@ -63,7 +63,7 @@ const PHRASE: Record<Stage, string> = {
   sprint: '全力で走っています。そろそろ要約を',
 }
 
-/** What the cat has been doing since the band last moved it: the frames shown, the idle time, a jump or a demonstration. */
+/** What Clawd has been doing since the band last moved it: the frames shown, the idle time, a jump or a demonstration. */
 export type CatState = { steps: number; idleMs: number; jumpLeft: number; demo: Demo | null }
 
 export const initialCat: CatState = { steps: 0, idleMs: 0, jumpLeft: 0, demo: null }
@@ -72,13 +72,13 @@ export type CatView = {
   look: Look
   /** Milliseconds until the next frame. */
   periodMs: number
-  /** What the cat is up to, in a line. */
+  /** What Clawd is up to, in a line. */
   phrase: string
-  /** Nothing moves: the cat sleeps for good until someone is back, so no timer need run. */
+  /** Nothing moves: Clawd sleeps for good until someone is back, so no timer need run. */
   isResting: boolean
 }
 
-/** The cat for these facts and this state: pure, so the band and the timer agree. */
+/** Clawd for these facts and this state: pure, so the band and the timer agree. */
 export const catView = (f: Facts, s: CatState): CatView => {
   if (s.jumpLeft > 0 || s.demo === 'jump') {
     const played = s.demo === 'jump' ? s.steps : JUMP_STEPS - s.jumpLeft

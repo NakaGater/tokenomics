@@ -572,8 +572,8 @@ test('the band adds up every kind of saving in one figure, and the pane tells th
   const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
   await callBash($, 'a')
   await calls.clock.advance(4_000)
-  // The conversation's own cut alone: confirmed, and so the label says nothing of an estimate.
-  for (const ui of bands) expect(await savedLabelIn(ui)).toBe('節約')
+  // The session's row names the figure the same whatever is in it; the pane says which kinds are.
+  for (const ui of bands) expect(await savedLabelIn(ui)).toBe('節約（延べ）')
 
   await $.tool.call({ tool: 'Bash', tool_use_id: 'sub_1', command: 'bun test', agentId: 'ag1' } as never)
   await calls.clock.advance(4_000)
@@ -585,16 +585,17 @@ test('the band adds up every kind of saving in one figure, and the pane tells th
   expect(inSubagent).toBeGreaterThan(10_000)
   for (const ui of bands) {
     expect(await savedIn(ui)).toBe(`約 ${Math.round((confirmed + inSubagent) / 1000)}k tok`)
-    expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+    expect(await savedLabelIn(ui)).toBe('節約（延べ）')
   }
 
   const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: 'このセッションの節約' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: '今日の節約（合計）' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: '今日の節約（確定）' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: '今日の節約（サブ）' })).toBeDefined()
 })
 
-test('a subagent’s cut alone is in the band’s figure, with the estimate named in the label', AUTO, async ($, on) => {
+test('a subagent’s cut alone is in the session’s figure', AUTO, async ($, on) => {
   const calls = engine(on, { tmp: TMP })
   on('tool.call', () => bash(log()))
   await $.session.start(START)
@@ -605,7 +606,7 @@ test('a subagent’s cut alone is in the band’s figure, with the estimate name
 
   const inSubagent = sum(parseLedger(calls.store.get('ledger:v1')), 'A1:subSavedTokens')
   expect(await savedIn(ui)).toBe(`約 ${Math.round(inSubagent / 1000)}k tok`)
-  expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+  expect(await savedLabelIn(ui)).toBe('節約（延べ）')
 })
 
 for (const digest of ['observe', 'off'] as const) {
@@ -889,7 +890,7 @@ test('/tokenomics nudge-test shows the line once, wherever the setting stands, s
 
   const ran = await $.command.run({ ...RUN, args: 'nudge-test' } as never)
   expect(ran.text).toContain('提案の表示テスト')
-  expect(ran.text).toContain('猫のカード')
+  expect(ran.text).toContain('帯のカード')
   expect((await reply($, 't1')).text).toBe('the answer')
   expect(await nudgeIn(ui)).toBe(DEMO_SHORT)
   await ask($, 'next')

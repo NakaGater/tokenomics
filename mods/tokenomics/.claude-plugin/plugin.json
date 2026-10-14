@@ -1,14 +1,14 @@
 {
   "name": "tokenomics",
-  "version": "0.6.10",
+  "version": "0.7.0",
   "description": "Shows how much of the context a session has used, says what to do about it at the moment it helps, and quietly keeps big outputs and lighter subagents from costing more than they should.",
   "author": { "name": "NakaGater" },
   "types": "./types/index.d.ts",
   "userConfig": {
     "hud": {
       "type": "boolean",
-      "title": "猫とバンドを表示する",
-      "description": "入力欄の上の猫・ゲージ・提案を表示します（ターミナルのみ）。オフでも、節約の仕組みは動きます。",
+      "title": "Clawd とバンドを表示する",
+      "description": "入力欄の上の Clawd・ゲージ・提案を表示します（ターミナルのみ）。オフでも、節約の仕組みは動きます。",
       "default": true
     },
     "digest": {

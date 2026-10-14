@@ -3,7 +3,8 @@ import { type Engine, describe, expect, test } from 'claude-code/testing'
 import type { Facts } from '../types'
 
 import { scaledPercent } from '../hooks/lib/advice'
-import { CAT_COLS, CAT_ROWS, FRAMES, type Look, type Pose, catCells, catPoints } from '../hooks/lib/cat'
+import { CAT_COLS, CAT_ROWS, FRAMES, type Look, PICTURES, catCells, catPoints } from '../hooks/lib/cat'
+import { MARK_COLORS, POINT_COLORS, type Row } from '../hooks/lib/clawd'
 import { initialFacts } from '../hooks/lib/facts'
 import { moodOf } from '../hooks/lib/mascot'
 import { initialModes } from '../hooks/lib/modes'
@@ -166,20 +167,25 @@ describe('one scale for the cat, the colours and the suggestions', () => {
   })
 })
 
-const POSES: Pose[] = ['run', 'sleep', 'jump']
-const looks = (): Look[] =>
-  POSES.flatMap(pose =>
-    Array.from({ length: FRAMES[pose] }, (_, frame) => [false, true].map(isSweating => ({ pose, frame, isSweating }))).flat(),
-  )
+/** Every picture of every row, as the look that chooses it. */
+const LOOKS: Record<Row, Look[]> = {
+  run: Array.from({ length: PICTURES.run }, (_, step) => ({ pose: 'run', frame: step, isSweating: false, step, isWalking: false })),
+  walk: Array.from({ length: PICTURES.walk }, (_, step) => ({ pose: 'run', frame: step, isSweating: false, step, isWalking: true })),
+  sweat: Array.from({ length: PICTURES.sweat }, (_, step) => ({ pose: 'run', frame: step, isSweating: true, step })),
+  sleep: Array.from({ length: PICTURES.sleep }, (_, step) => ({ pose: 'sleep', frame: step, isSweating: false, step })),
+  jump: Array.from({ length: PICTURES.jump }, (_, step) => ({ pose: 'jump', frame: step, isSweating: false, step })),
+}
+const ROW_NAMES = Object.keys(LOOKS) as Row[]
+const looks = (): Look[] => Object.values(LOOKS).flat()
 
-describe('the cat’s picture', () => {
-  const FUR = 0xe8913a
-  const EYE = 0x2a1b14
-  const SWEAT = 0x7fd0ff
+describe('Clawd’s picture', () => {
+  const FUR = POINT_COLORS.o
+  const EYE = POINT_COLORS.k
+  const SWEAT = POINT_COLORS.s
   const SIGNS = ['z', 'Z', '+', '*']
+  const COLOR: Record<string, number> = { '.': TERMINAL_DEFAULT, o: FUR, k: EYE, s: SWEAT }
 
-  /** The cat as filled points (`o` and `k`) and the cell each cell of the grid draws, row by row. */
-  const pointsOf = (look: Look) => catPoints(look).map(row => [...row].map(ch => ch !== '.'))
+  /** The points of one cell of the grid: letters, `o` body, `k` eye, `s` sweat, `.` nothing. */
   const cellsOf = (look: Look) => decodeCells(catCells(look))
   const pointsIn = (look: Look, index: number) => {
     const rows = catPoints(look)
@@ -187,14 +193,21 @@ describe('the cat’s picture', () => {
     const row = Math.floor(index / CAT_COLS)
     return [0, 1].flatMap(dy => [0, 1].map(dx => rows[row * 2 + dy]?.[col * 2 + dx] ?? '.'))
   }
+  const signsOf = (look: Look) => cellsOf(look).flatMap((c, i) => (c.ch === 'z' || c.ch === 'Z' ? [`${c.ch}${i}`] : []))
+
+  test('five rows of pictures: a run, a walk, a sweat, a sleep and a jump', () => {
+    expect(PICTURES).toEqual({ run: 4, walk: 4, sweat: 4, sleep: 4, jump: 8 })
+    // The cells and the pictures share one count, so a frame never means two things.
+    expect(FRAMES).toEqual({ run: PICTURES.run, sleep: PICTURES.sleep, jump: PICTURES.jump })
+  })
 
   test('every look fills the grid, in glyphs and colours a Raster accepts', () => {
     for (const look of looks()) {
       const cells = cellsOf(look)
       expect(cells.length).toBe(CAT_COLS * CAT_ROWS)
       for (const cell of cells) {
-        // One printable glyph of one column, from the basic plane: a quarter block, the thin bar of a shut eye, or a sign.
-        expect([...QUADRANTS, '▂', ...SIGNS] as string[]).toContain(cell.ch)
+        // One printable glyph of one column, from the basic plane: a quarter block, or a sign.
+        expect([...QUADRANTS, ...SIGNS] as string[]).toContain(cell.ch)
         expect(cell.ch.codePointAt(0) ?? 0).toBeLessThan(0x10000)
         // 0xRRGGBB, or the terminal's own.
         for (const color of [cell.fg, cell.bg]) expect(color === TERMINAL_DEFAULT || (color >= 0 && color <= 0xffffff)).toBe(true)
@@ -212,92 +225,98 @@ describe('the cat’s picture', () => {
     }
   })
 
-  test('the frames of a pose differ, so there is something to animate; so does a sweat from none', () => {
-    for (const pose of POSES) {
-      const seen = new Set(Array.from({ length: FRAMES[pose] }, (_, frame) => catCells({ pose, frame, isSweating: false })))
-      expect(seen.size).toBe(FRAMES[pose])
+  test('no picture is the one before it, so there is something to animate, and no row borrows another’s', () => {
+    for (const row of ROW_NAMES) {
+      const cells = LOOKS[row].map(catCells)
+      cells.forEach((c, i) => expect(c).not.toBe(cells[(i + 1) % cells.length]))
+      // Only the middle picture of a walk or a sleep is played twice (there and back).
+      expect(new Set(cells).size).toBe(row === 'walk' || row === 'sleep' ? cells.length - 1 : cells.length)
     }
+    const groups = ROW_NAMES.map(row => new Set(LOOKS[row].map(catCells)))
+    groups.forEach((a, i) => groups.forEach((b, j) => i !== j && expect([...a].some(c => b.has(c))).toBe(false)))
+    // A frame past the end of the cycle is the cycle again, and a look with no step uses its frame.
+    expect(catCells({ pose: 'run', frame: PICTURES.run, isSweating: false })).toBe(catCells({ pose: 'run', frame: 0, isSweating: false }))
+    expect(catCells({ pose: 'run', frame: 2, isSweating: false, step: 2 })).toBe(catCells({ pose: 'run', frame: 2, isSweating: false }))
+    // The cells tell a walk and a sweat from a run, as the pictures do.
+    expect(catCells({ pose: 'run', frame: 0, isSweating: false, isWalking: true })).not.toBe(catCells({ pose: 'run', frame: 0, isSweating: false }))
     expect(catCells({ pose: 'run', frame: 0, isSweating: true })).not.toBe(catCells({ pose: 'run', frame: 0, isSweating: false }))
-    // A frame past the end of the cycle is the cycle again.
-    expect(catCells({ pose: 'run', frame: 4, isSweating: false })).toBe(catCells({ pose: 'run', frame: 0, isSweating: false }))
   })
 
-  test('it is one silhouette in orange: fur, a dark eye and the little marks, no other colour', () => {
+  test('it is one orange body: fur, dark eyes and the little marks, no other colour', () => {
     for (const look of looks()) {
       const colors = new Set(cellsOf(look).flatMap(c => (c.ch === ' ' ? [] : [c.fg, c.bg])).filter(c => c !== TERMINAL_DEFAULT))
       expect(colors.has(FUR)).toBe(true)
-      for (const color of colors) expect([FUR, EYE, SWEAT, 0xa8b4ff, 0xffe066]).toContain(color)
-    }
-    // And it is a cat’s size, not a speck.
-    for (let frame = 0; frame < FRAMES.run; frame++) {
-      const filled = pointsOf({ pose: 'run', frame, isSweating: false }).flat().filter(Boolean).length
-      expect(filled).toBeGreaterThan(70)
+      for (const color of colors) expect([FUR, EYE, SWEAT, MARK_COLORS.z, MARK_COLORS.y]).toContain(color)
+      // And it is a body’s size, not a speck.
+      expect(catPoints(look).join('').split('o').length - 1).toBeGreaterThan(60)
     }
   })
 
   test('the whole outline changes from one running frame to the next, not only the feet', () => {
-    const run = (frame: number) => pointsOf({ pose: 'run', frame, isSweating: false })
-    for (let frame = 0; frame < FRAMES.run; frame++) {
-      const a = run(frame)
-      const b = run(frame + 1)
-      const changed = a.flat().filter((on, i) => on !== b.flat()[i]).length
-      expect(changed).toBeGreaterThanOrEqual(24)
-      // The top of the back moves too (a row above the legs differs), so the body rises and falls.
-      expect(a.slice(0, 5).map(r => r.join('')).join('|')).not.toBe(b.slice(0, 5).map(r => r.join('')).join('|'))
+    const outline = (look: Look) => catPoints(look).map(row => [...row].map(ch => (ch === '.' ? ' ' : 'x')).join(''))
+    const run = LOOKS.run.map(outline)
+    run.forEach((a, i) => {
+      const b = run[(i + 1) % run.length] ?? []
+      const changed = a.join('').split('').filter((ch, k) => ch !== b.join('')[k]).length
+      expect(changed).toBeGreaterThanOrEqual(12)
+    })
+    // The body rises and falls: the top row of it is not always the same.
+    const tops = LOOKS.run.map(look => catPoints(look).findIndex(row => row.includes('o')))
+    expect(new Set(tops).size).toBeGreaterThan(1)
+  })
+
+  test('Clawd has two eyes, in every frame, set in the body: eight dark points, never at its edge', () => {
+    for (const look of looks()) {
+      const rows = catPoints(look)
+      expect(rows.join('').split('k').length - 1).toBe(8)
+      rows.forEach((row, y) =>
+        [...row].forEach((ch, x) => {
+          if (ch !== 'k') return
+          for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) expect(rows[y + dy]?.[x + dx] ?? '.').not.toBe('.')
+        }),
+      )
+      // An eye is dark in the cells it is in: on the body's colour, or a whole cell of its own.
+      expect(cellsOf(look).some(c => c.fg === EYE)).toBe(true)
     }
   })
 
-  test('the cat has a head: broad ears at the top right and a dark eye, in every running and leaping frame', () => {
-    for (const look of looks().filter(l => l.pose !== 'sleep')) {
-      expect(cellsOf(look).some(c => c.fg === EYE && c.bg === FUR)).toBe(true)
+  test('asleep it lies on the ground with its eyes shut, a thin line, under z’s that come and go', () => {
+    for (const look of LOOKS.sleep) {
+      const rows = catPoints(look)
+      // Shut: all the dark points are in one row, and it is low in the picture.
+      expect(rows.flatMap((row, y) => (row.includes('k') ? [y] : [])).length).toBe(1)
+      expect(rows.slice(0, 3).join('')).not.toContain('o')
+      expect(signsOf(look).length).toBeGreaterThan(0)
     }
-    // The ears are the top of the head: something is drawn in the top rows at the right-hand end, with a gap between two ears.
-    const rows = catPoints({ pose: 'run', frame: 2, isSweating: false })
-    const ears = rows[0] ?? ''
-    expect(ears.slice(-14).split('').filter(ch => ch !== '.').length).toBe(2)
-    expect(rows[1]?.slice(-14)).toMatch(/o+\.o+/)
+    const signs = LOOKS.sleep.map(l => signsOf(l).join())
+    expect(new Set(signs).size).toBe(3)
+    expect(signs[1]).toBe(signs[3])
   })
 
-  test('asleep it has a shut eye, a thin bar on the face, and the head is told from the back by a dip', () => {
-    for (let frame = 0; frame < FRAMES.sleep; frame++) {
-      const look: Look = { pose: 'sleep', frame, isSweating: false }
-      expect(cellsOf(look).filter(c => c.ch === '▂' && c.fg === EYE && c.bg === FUR).length).toBe(1)
-      // Two ears stand above the loaf.
-      expect(catPoints(look)[3]?.match(/o+/g)?.length).toBeGreaterThanOrEqual(2)
+  test('a sweat shows on every sweating frame and on no other, and a sparkle on every leaping one', () => {
+    for (const look of LOOKS.sweat) {
+      expect(catPoints(look).join('')).toContain('s')
+      expect(cellsOf(look).some(c => c.fg === SWEAT)).toBe(true)
     }
-    // The z’s are letters, and they drift between the two frames.
-    const signs = (frame: number) => cellsOf({ pose: 'sleep', frame, isSweating: false }).flatMap((c, i) => (c.ch === 'z' || c.ch === 'Z' ? [`${c.ch}${i}`] : []))
-    expect(signs(0).length).toBe(2)
-    expect(signs(1).length).toBe(2)
-    expect(signs(0).join()).not.toBe(signs(1).join())
+    for (const row of ROW_NAMES.filter(r => r !== 'sweat')) {
+      for (const look of LOOKS[row]) expect(cellsOf(look).some(c => c.fg === SWEAT)).toBe(false)
+    }
+    for (const look of LOOKS.jump) expect(cellsOf(look).some(c => c.ch === '+' || c.ch === '*')).toBe(true)
   })
 
-  test('a sweat shows on every running frame, and a sparkle on every leaping one', () => {
-    for (let frame = 0; frame < FRAMES.run; frame++) {
-      expect(cellsOf({ pose: 'run', frame, isSweating: true }).some(c => c.fg === SWEAT)).toBe(true)
-      expect(cellsOf({ pose: 'run', frame, isSweating: false }).some(c => c.fg === SWEAT)).toBe(false)
-    }
-    for (let frame = 0; frame < FRAMES.jump; frame++) {
-      expect(cellsOf({ pose: 'jump', frame, isSweating: false }).some(c => c.ch === '+' || c.ch === '*')).toBe(true)
-    }
-  })
-
-  test('a mark never shares a cell with the cat, and a cell of two colours is all cat: nothing is painted over empty points', () => {
+  test('each cell draws exactly the four points it stands for, and a mark never shares a cell with Clawd', () => {
     for (const look of looks()) {
       cellsOf(look).forEach((cell, i) => {
         const points = pointsIn(look, i)
-        if (cell.ch === ' ') return
-        if (cell.bg === FUR) {
-          // The eye on a face, or the shut eye: every other point of the cell is fur.
-          expect(points.every(p => p !== '.')).toBe(true)
-        } else if (cell.fg === FUR) {
-          // Plain fur: the glyph is exactly the fur points.
-          const bits = points.reduce((n, p, k) => (p === 'o' ? n | (1 << k) : n), 0)
-          expect(cell.ch).toBe(QUADRANTS[bits])
-        } else {
-          // A mark: its cell holds no cat.
+        if (SIGNS.includes(cell.ch)) {
+          // A mark: its cell holds no body.
           expect(points.every(p => p === '.')).toBe(true)
+          return
         }
+        // A quarter of the glyph is the foreground, the others the background: that is what the points say, with no point lost.
+        const bits = QUADRANTS.indexOf(cell.ch as (typeof QUADRANTS)[number])
+        const drawn = points.map((_, k) => ((bits >> k) & 1) === 1 ? cell.fg : cell.bg)
+        expect(drawn).toEqual(points.map(p => COLOR[p]))
       })
     }
   })
@@ -357,7 +376,7 @@ test('the band hands the cat its place and repaints it frame by frame, there and
   }
   // The frames run through the cycle in order.
   const frames = calls.blits.slice(0, 4).map(b => b.cells)
-  expect(frames).toEqual([0, 1, 2, 3].map(frame => cellsOf({ pose: 'run', frame, isSweating: false })))
+  expect(frames).toEqual(LOOKS.run.map(catCells))
   await ui.unmount()
 })
 
@@ -378,13 +397,13 @@ test('the larger the conversation, the quicker the frames', async ($, on) => {
   expect(sprint).toBeGreaterThan(stroll * 2)
 })
 
-test('an empty conversation sleeps: the picture is the curled cat, two frames, not the running one', async ($, on) => {
+test('an empty conversation sleeps: the picture is Clawd lying down, not the running one', async ($, on) => {
   const calls = engine(on, { conversationTokens: 1_000 })
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.measure(measureTokens(BASELINE + 3_000))
   await calls.clock.advance(3000)
 
-  const asleep = [0, 1].map(frame => cellsOf({ pose: 'sleep', frame, isSweating: false }))
+  const asleep = LOOKS.sleep.map(catCells)
   expect(calls.blits.length).toBeGreaterThan(2)
   for (const blit of calls.blits) expect(asleep).toContain(blit.cells)
 })
@@ -395,7 +414,8 @@ test('five quiet minutes and the cat curls up for good; the next word wakes it',
   await $.session.measure(measureTokens(BASELINE + 120_000))
 
   await calls.clock.advance(IDLE_SLEEP_MS + 5_000)
-  const sleeping = cellsOf({ pose: 'sleep', frame: 0, isSweating: false })
+  // The resting picture is the second of the row: breathing in, with both z's.
+  const sleeping = cellsOf({ pose: 'sleep', frame: 0, isSweating: false, step: 1 })
   expect(calls.blits.at(-1)?.cells).toBe(sleeping)
 
   // Nothing runs on any more: not a frame in an hour.
@@ -473,7 +493,7 @@ test('a compaction makes the cat jump, and then it runs at the new, slower pace'
 
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hello', toolUses: [] }] })
   await calls.clock.advance(2000)
-  const jumps = [0, 1, 2, 3].map(frame => cellsOf({ pose: 'jump', frame, isSweating: false }))
+  const jumps = LOOKS.jump.map(catCells)
   const first = calls.blits.slice(0, JUMP_STEPS)
   expect(first.length).toBe(JUMP_STEPS)
   for (const blit of first) expect(jumps).toContain(blit.cells)
@@ -526,14 +546,14 @@ test('the pane can show every pose, whatever the conversation is like, and then 
 
   await pane.press({ key: 'cat-sprint' })
   await calls.clock.advance(500)
-  const sprint = [0, 1, 2, 3].map(frame => cellsOf({ pose: 'run', frame, isSweating: false }))
+  const sprint = LOOKS.run.map(catCells)
   expect(calls.blits.length).toBeGreaterThan(4)
   expect(calls.blits.every(b => sprint.includes(b.cells))).toBe(true)
 
   calls.blits.length = 0
   await pane.press({ key: 'cat-sweat' })
   await calls.clock.advance(300)
-  expect(calls.blits.some(b => [0, 1, 2, 3].some(frame => b.cells === cellsOf({ pose: 'run', frame, isSweating: true })))).toBe(true)
+  expect(calls.blits.some(b => LOOKS.sweat.some(look => b.cells === catCells(look)))).toBe(true)
 
   calls.blits.length = 0
   await pane.press({ key: 'cat-jump' })
@@ -544,7 +564,7 @@ test('the pane can show every pose, whatever the conversation is like, and then 
   await calls.clock.advance(30_000)
   calls.blits.length = 0
   await calls.clock.advance(2_000)
-  const asleep = [0, 1].map(frame => cellsOf({ pose: 'sleep', frame, isSweating: false }))
+  const asleep = LOOKS.sleep.map(catCells)
   expect(calls.blits.length).toBeGreaterThan(0)
   expect(calls.blits.every(b => asleep.includes(b.cells))).toBe(true)
 })
@@ -647,12 +667,12 @@ test('the first response measures what an empty session holds, so the cat is cou
   calls.blits.length = 0
   await $.session.measure(measureTokens(46_000))
   await calls.clock.advance(1000)
-  expect(calls.blits.every(b => [0, 1].map(frame => cellsOf({ pose: 'sleep', frame, isSweating: false })).includes(b.cells))).toBe(true)
+  expect(calls.blits.every(b => LOOKS.sleep.map(catCells).includes(b.cells))).toBe(true)
 
   calls.blits.length = 0
   await $.session.measure(measureTokens(47_500))
   await calls.clock.advance(1000)
-  expect(calls.blits.some(b => [0, 1, 2, 3].some(frame => b.cells === cellsOf({ pose: 'run', frame, isSweating: false })))).toBe(true)
+  expect(calls.blits.some(b => [...LOOKS.run, ...LOOKS.walk].some(look => b.cells === catCells(look)))).toBe(true)
 })
 
 test('a session that ends stops the timer', async ($, on) => {

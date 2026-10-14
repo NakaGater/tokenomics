@@ -18,20 +18,40 @@ const NONE = 'まだありません'
 const signedUsd = (milli: number): string => `約 ${milli < 0 ? '−' : ''}${formatUsd(Math.abs(milli) / 1000)}`
 
 /**
- * Everything the savings layer kept out today, as the band says it in one figure: the digest's cuts (確定) and the reading handed to
+ * Everything the savings layer kept out, as the band says it in one figure: the digest's cuts (確定) and the reading handed to
  * a skill or agent (推定), each added up over the requests it spared once it was out of the conversation (延べ), and the outputs cut
  * inside subagents, as they were cut. Where no request has followed a kind yet (or the ledger is from before they were counted)
- * its size as it was cut stands in. `label` says what is in it: 延べ where requests were counted, 推定 where an estimate is.
- * It is a figure to show: the ledger and the pilot report keep the kinds apart.
+ * its size as it was cut stands in. It is a figure to show: the ledger and the pilot report keep the kinds apart.
  */
-export const savedAll = (s: Savings): { tokens: number; digest: number; delegated: number; isSpread: boolean; isEstimated: boolean; label: string } => {
+export const savedAll = (s: Savings): { tokens: number; digest: number; delegated: number; isSpread: boolean; isEstimated: boolean } => {
   const digest = Math.max(s.tokens, s.flowTokens)
   const delegated = Math.max(s.keptTokens, s.flowKeptTokens)
-  const isSpread = s.flowReqs > 0
-  const isEstimated = delegated > 0 || s.subTokens > 0
-  const said = [...(isSpread ? ['延べ'] : []), ...(isEstimated ? ['推定含む'] : [])]
 
-  return { tokens: digest + delegated + s.subTokens, digest, delegated, isSpread, isEstimated, label: said.length === 0 ? '節約' : `節約（${said.join('・')}）` }
+  return { tokens: digest + delegated + s.subTokens, digest, delegated, isSpread: s.flowReqs > 0, isEstimated: delegated > 0 || s.subTokens > 0 }
+}
+
+/**
+ * What the savings layer has kept out of this session, in one row: the band's figure, with what it is made of. The day's rows (below)
+ * are every session's; this is the one the band says, and `/clear` starts it over. Nothing when it has kept nothing out.
+ */
+export const sessionSavingRows = (s: Savings): Row[] => {
+  const all = savedAll(s)
+  if (all.tokens <= 0) return []
+  const parts: string[] = []
+  if (all.digest > 0) parts.push(`確定 ${formatTokens(all.digest)}`)
+  if (all.delegated > 0) parts.push(`推定 ${formatTokens(all.delegated)}`)
+  if (s.subTokens > 0) parts.push(`サブエージェント内 ${formatTokens(s.subTokens)}`)
+
+  return [
+    {
+      label: 'このセッションの節約',
+      value:
+        `約 ${formatTokens(all.tokens)} tok（帯の「節約（延べ）」と同じ数字）＝ ${parts.join(' ＋ ')}` +
+        (all.isSpread ? '。確定と推定は延べ' : '') +
+        (all.isEstimated ? '。推定を含む' : '') +
+        '。/clear で数え直します',
+    },
+  ]
 }
 
 /**
@@ -39,7 +59,7 @@ export const savedAll = (s: Savings): { tokens: number; digest: number; delegate
  * The digest's figure is a cut that happened (確定); the next is an estimate of the reading that work handed to a skill or
  * agent kept out of the conversation, and a cautious one; the last is what the cuts inside subagents spared them. Each has a row
  * of its own, as it was cut. What was kept out spares every request that follows, so one more row counts that (延べ), in tokens and,
- * measured on the requests that were made, in dollars; and a row on top adds the kinds up: the figure the band shows.
+ * measured on the requests that were made, in dollars; and a row on top adds the kinds up.
  */
 export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
   const rows: Row[] = []
@@ -52,7 +72,7 @@ export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
     rows.push({
       label: '今日の節約（合計）',
       value:
-        `約 ${formatTokens(all.tokens)} tok ＝ ${parts.join(' ＋ ')}（帯の「節約」と同じ数字` +
+        `約 ${formatTokens(all.tokens)} tok ＝ ${parts.join(' ＋ ')}（今日、この端末のすべてのセッションの分` +
         (all.isSpread ? '。確定と推定は延べ' : '') +
         (all.isEstimated ? '。推定を含む' : '') +
         '）',
@@ -118,7 +138,7 @@ const fillNote = (f: Facts, fill: Fill): string => {
 }
 
 /** The state of the session in labelled rows: the pane draws them, the plain-text report prints them. */
-export const statusRows = (f: Facts, savings?: Savings): Row[] => {
+export const statusRows = (f: Facts, savings?: Savings, sessionSavings?: Savings): Row[] => {
   const rows: Row[] = []
 
   const fill = fillOf(f)
@@ -198,6 +218,7 @@ export const statusRows = (f: Facts, savings?: Savings): Row[] => {
     })
   }
 
+  if (sessionSavings !== undefined) rows.push(...sessionSavingRows(sessionSavings))
   if (savings !== undefined) rows.push(...savingsRows(savings, f.rateLimits.length > 0))
 
   return rows
@@ -206,10 +227,10 @@ export const statusRows = (f: Facts, savings?: Savings): Row[] => {
 export const NOTHING_TO_DO = '今は何もしなくて大丈夫です。'
 
 /** The same content as the pane, as text, for a terminal too narrow to seat one. */
-export const report = (f: Facts, advice: readonly Advice[], offers: readonly Offer[], savings?: Savings): string => {
+export const report = (f: Facts, advice: readonly Advice[], offers: readonly Offer[], savings?: Savings, sessionSavings?: Savings): string => {
   const top = offers[0] ?? advice[0]
   const lines: string[] = [`${FACE[moodForLevel(top?.level ?? 'ok')]} トークン消費`]
-  for (const row of statusRows(f, savings)) lines.push(`  ${row.label}  ${row.value}`)
+  for (const row of statusRows(f, savings, sessionSavings)) lines.push(`  ${row.label}  ${row.value}`)
 
   lines.push('', '今やること')
   if (advice.length === 0 && offers.length === 0) {

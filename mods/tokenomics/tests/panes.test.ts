@@ -84,7 +84,7 @@ test('the analysis pane reads: status, the chart, what is heavy; it has no slide
 
     expect(await pane.find({ type: 'Text', text: 'いま効いている節約' })).toBeUndefined()
     expect(await pane.find({ type: 'Text', text: '止めている提案' })).toBeUndefined()
-    expect(await pane.find({ type: 'Text', text: 'ねこのようす' })).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: 'Clawd のようす' })).toBeUndefined()
     expect(await pane.find({ type: 'Text', text: '自動要約のタイミング' })).toBeUndefined()
     await pane.unmount()
   }

@@ -86,7 +86,7 @@ export const nudgeLine = (c: Candidate, isSubscription: boolean, costMilliUsd: n
 }
 
 /**
- * The same suggestion, shortened to fit in the cat card, where it takes the place of the cat's phrase (about 34 cells
+ * The same suggestion, shortened to fit in the band's card, where it takes the place of Clawd's phrase (about 34 cells
  * across at the narrowest card). It says the moment and the way out; the figures that `nudgeLine` adds are the pane's.
  */
 export const nudgeShort = (c: Candidate, isSubscription: boolean, costMilliUsd: number | null = null): string => {
@@ -105,5 +105,5 @@ export const nudgeShort = (c: Candidate, isSubscription: boolean, costMilliUsd: 
 /** What `/tokenomics nudge-test` shows, so the line can be seen on screen without waiting for a real moment. */
 export const DEMO_LINE = 'これは提案の表示テストです。実際の提案も、返信のあとにこの形で一行出ます（何も入力されません）。'
 
-/** The test line for the cat card (`hud` on), where the suggestion replaces the cat's phrase. */
+/** The test line for the band's card (`hud` on), where the suggestion replaces Clawd's phrase. */
 export const DEMO_SHORT = 'これは提案の表示テストです。実際の提案も、ここに出ます（何も入力されません）。'

@@ -508,15 +508,22 @@ export const nudgeIn = async (ui: TextFinder): Promise<string | undefined> =>
 
 /** What the cat's phrase says in the card: the dim Text that is not the label of a figure or a limit. */
 export const phraseIn = async (ui: TextFinder): Promise<string | undefined> =>
-  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|今回|現在のターンの合計|リクエスト|出力|└ キャッシュ読み|キャッシュ書き込み|キャッシュなし|エージェント|節約(?:（[^）]*）)?|累計|.*の上限)$/.test(t.text ?? ''))?.text
+  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|現在のターンの合計|セッション|現在のセッションの合計|リクエスト|ターン|出力|└ キャッシュ読み|キャッシュ書き込み|キャッシュなし|エージェント|節約(?:（[^）]*）)?|累計|.*の上限)$/.test(t.text ?? ''))?.text
 
-/** What the band says the savings layer has kept out today, all kinds added up: the figure beside the dim label "節約", with "延べ" and "推定含む" in brackets where they apply, or undefined where it says nothing. */
+/** What the session's row says the savings layer has kept out, all kinds added up: the green figure beside the dim label "節約（延べ）"; undefined while it is none (the row says "0 tok" then, not in green). */
 export const savedIn = async (ui: TextFinder): Promise<string | undefined> => {
   const texts = await ui.findAll({ type: 'Text' })
   const label = texts.find(t => /^節約(?:（[^）]*）)?$/.test(t.text ?? '') && t.props.dimColor === true)
   return label === undefined ? undefined : texts.find(t => t.props.color === 'success')?.text
 }
 
-/** The dim label of that figure: "節約", or "節約（延べ）", "節約（推定含む）", "節約（延べ・推定含む）"; undefined where the band says nothing. */
+/** The figure standing right after the label "節約（延べ）", green or not: "0 tok" while nothing is kept out. */
+export const savedValueIn = async (ui: TextFinder): Promise<string | undefined> => {
+  const texts = await ui.findAll({ type: 'Text' })
+  const at = texts.findIndex(t => t.text === '節約（延べ）')
+  return at < 0 ? undefined : texts[at + 1]?.text
+}
+
+/** The dim label of that figure: "節約（延べ）", which the session's row always has. */
 export const savedLabelIn = async (ui: TextFinder): Promise<string | undefined> =>
   (await ui.findAll({ type: 'Text' })).find(t => /^節約(?:（[^）]*）)?$/.test(t.text ?? '') && t.props.dimColor === true)?.text

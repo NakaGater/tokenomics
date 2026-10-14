@@ -4,7 +4,7 @@ import { DEMO_SHORT } from '../hooks/lib/core/nudges'
 import { cardExtraRows } from '../hooks/ui/band'
 import { FACE } from '../hooks/lib/mascot'
 
-import { SURFACES, bandProps, engine, frameColor, measure, nudgeIn, phraseIn, runStep } from './kit'
+import { SURFACES, bandProps, engine, frameColor, measure, nudgeIn, phraseIn, runStep, savedValueIn } from './kit'
 
 const USAGE = { input_tokens: 900, output_tokens: 300, cache_creation_input_tokens: 2000, cache_read_input_tokens: 2_100_000, model: 'm' }
 
@@ -71,12 +71,61 @@ test('the band says how many requests the turn made, and that its figures are th
   expect(await ui.find({ type: 'Text', text: '2 回' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '入力 304k tok' })).toBeDefined()
 
-  // The next turn starts the count over.
+  // The next turn starts the turn's count over; the session's goes on: three requests in two turns, then the turn's one.
   options.stepUsage = { input_tokens: 2, output_tokens: 50, cache_read_input_tokens: 153_000, cache_creation_input_tokens: 100, model: 'm' }
   await runStep($ as never, { agentId: undefined })
   await finishTurn($ as never, { input_tokens: 2, output_tokens: 50, cache_read_input_tokens: 153_000, cache_creation_input_tokens: 100, model: 'm' })
-  expect(await ui.find({ type: 'Text', text: '1 回' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '2 回' })).toBeUndefined()
+  const counts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '').filter(t => /^\d+ 回$/.test(t))
+  expect(counts).toEqual(['3 回', '2 回', '1 回'])
+})
+
+test('the session’s row stands under the context and over the turn’s, and counts the turn under way', async ($, on) => {
+  const first = { input_tokens: 2, output_tokens: 700, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 1_000, model: 'm' }
+  const options = { stepUsage: first }
+  engine(on, options)
+  // Wide enough that the first chip is named in full.
+  const ui = await $.ui.mount({ ...bandProps({ bodyColumns: 150 }), surface: 'terminal' })
+  const texts = async (): Promise<string[]> => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+
+  // Before a turn: a dash for the session as for the turn, and the saving is there all the same, none yet.
+  expect((await texts()).filter(t => t === '—')).toHaveLength(2)
+  expect(await savedValueIn(ui)).toBe('0 tok')
+
+  // One request of the first turn is in: the turn is part of the session while it runs, so the two say the same.
+  await runStep($ as never, { agentId: undefined })
+  let t = await texts()
+  expect(t.indexOf('コンテキスト')).toBeLessThan(t.indexOf('現在のセッションの合計'))
+  expect(t.indexOf('現在のセッションの合計')).toBeLessThan(t.indexOf('現在のターンの合計'))
+  expect(t.filter(x => x === '入力 151k tok')).toHaveLength(2)
+
+  // The turn ends: nothing is counted twice. The row is the prompt whole, the output, the requests and the turns.
+  options.stepUsage = { input_tokens: 2, output_tokens: 500, cache_read_input_tokens: 151_000, cache_creation_input_tokens: 2_000, model: 'm' }
+  await runStep($ as never, { agentId: undefined })
+  await finishTurn($ as never, { input_tokens: 4, output_tokens: 1_200, cache_read_input_tokens: 301_000, cache_creation_input_tokens: 3_000, model: 'm' })
+  t = await texts()
+  expect(t.slice(t.indexOf('現在のセッションの合計'), t.indexOf('現在のターンの合計'))).toEqual([
+    '現在のセッションの合計', '入力 304k tok', '出力', '1.2k tok', 'リクエスト', '2 回', 'ターン', '1 回', '節約（延べ）', '0 tok',
+  ])
+
+  // A second turn under way: the session goes on from the first, the turn's own figures start over.
+  options.stepUsage = { input_tokens: 2, output_tokens: 100, cache_read_input_tokens: 153_000, cache_creation_input_tokens: 100, model: 'm' }
+  await runStep($ as never, { agentId: undefined })
+  t = await texts()
+  expect(t.slice(t.indexOf('現在のセッションの合計'), t.indexOf('現在のターンの合計'))).toEqual([
+    '現在のセッションの合計', '入力 457k tok', '出力', '1.3k tok', 'リクエスト', '3 回', 'ターン', '2 回', '節約（延べ）', '0 tok',
+  ])
+  expect(t).toContain('入力 153k tok')
+})
+
+test('where the band is one plain row, the session’s chips stand in it too', async ($, on) => {
+  engine(on)
+  await $.session.measure(measure.context(40))
+  const ui = await $.ui.mount({ ...bandProps({ bodyColumns: 50 }), surface: 'terminal' })
+  await finishTurn($ as never)
+
+  expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '現在のセッションの合計' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'ターン' })).toBeDefined()
 })
 
 test('a subagent’s steps are not the main turn’s requests', async ($, on) => {
@@ -196,15 +245,15 @@ test('where the cat’s card and a suggestion above it would not fit, the plain 
   await cramped.unmount()
 })
 
-test('the cat’s card needs its six rows: with less room the band is the plain row, suggestion or none', async ($, on) => {
+test('Clawd’s card needs its seven rows: with less room the band is the plain row, suggestion or none', async ($, on) => {
   engine(on)
-  const six = await $.ui.mount({ ...bandProps({ maxRows: 6 }), surface: 'terminal' })
-  expect(await six.find({ type: 'Raster', key: 'cat' })).toBeDefined()
-  await six.unmount()
+  const seven = await $.ui.mount({ ...bandProps({ maxRows: 7 }), surface: 'terminal' })
+  expect(await seven.find({ type: 'Raster', key: 'cat' })).toBeDefined()
+  await seven.unmount()
 
-  const five = await $.ui.mount({ ...bandProps({ maxRows: 5 }), surface: 'terminal' })
-  expect(await five.find({ type: 'Raster' })).toBeUndefined()
-  expect(await five.find({ type: 'Button', key: 'analysis' })).toBeDefined()
+  const six = await $.ui.mount({ ...bandProps({ maxRows: 6 }), surface: 'terminal' })
+  expect(await six.find({ type: 'Raster' })).toBeUndefined()
+  expect(await six.find({ type: 'Button', key: 'analysis' })).toBeDefined()
 })
 
 test('accepting from the card compacts once, says how much it saved, and lowers the fill at once', async ($, on) => {
@@ -311,15 +360,17 @@ test('a suggestion that wraps makes the card taller; where the room is short of 
   await $.session.start(START)
   await showNudge($ as never)
 
-  // DEMO_SHORT is 78 cells: three rows in the 34 the card leaves at 56 columns, two at 100, one at 120. The card is six rows with one.
-  // The last turn's chips (the usage of finishTurn) take two rows where they fit side by side, as at 100 and 120 columns.
-  // The card's right column is the gauge, the chips, the suggestion and the buttons, so two rows of chips and a one-line suggestion fill the cat's four and a row more.
-  // In the 34 cells at 56 columns the first row's two chips are 32 and 12 cells (the label saying what the figures total is long) and stand one to a row;
-  // with the label as "今回" alone they are 17 and 12 and stand side by side, and the cache's three (25, 25 and 22) stand one to a row: four rows of chips, five more.
+  // DEMO_SHORT is 78 cells: three rows in the 34 the card leaves at 56 columns, two at 100, one at 120. The card is seven rows with one.
+  // The last turn's chips (the usage of finishTurn) take two rows where they fit side by side, as at 100 and 120 columns, and the session's chips one.
+  // The card's right column is the gauge, the session's chips, the turn's chips, the suggestion and the buttons, so one row of the session, two of the turn and a one-line suggestion fill Clawd's five and one row more.
+  // In the 34 cells at 56 columns the first row of the turn's two chips are 32 and 12 cells (the label saying what the figures total is long) and stand one to a row;
+  // with the label as "今回" alone they are 17 and 12 and stand side by side, and the cache's three (25, 25 and 22) stand one to a row: four rows of chips.
+  // The session's first chip is 36 cells with its long label, wider than the 34, so it is "セッション" alone (24): its chips stand three rows (24; 12 and 11; the saving's 18).
+  // At 100 columns the long label would wrap the row (83 cells in 78) and the short one would not (71), so it is "セッション" there too.
   const places = [
-    { bodyColumns: 56, rows: 11 },
-    { bodyColumns: 100, rows: 8 },
-    { bodyColumns: 120, rows: 7 },
+    { bodyColumns: 56, rows: 14 },
+    { bodyColumns: 100, rows: 9 },
+    { bodyColumns: 120, rows: 8 },
   ]
   for (const place of places) {
     const fits = await $.ui.mount({ ...bandProps({ bodyColumns: place.bodyColumns, maxRows: place.rows }), surface: 'terminal' })
@@ -339,15 +390,18 @@ test('a suggestion that wraps makes the card taller; where the room is short of 
 const TURN = { input: 4, output: 107, cacheRead: 73_000, cacheWrite: 21_000, steps: [{ input: 4, output: 107, cacheRead: 73_000, cacheWrite: 21_000 }] } as never
 
 test('the cat’s phrase stands beside the buttons and takes no row of its own; a suggestion or advice does take one', () => {
-  // At 190 columns the chips of the last turn stand two rows and everything else one: the cat's four rows hold the card.
-  expect(cardExtraRows(null, false, 100, TURN)).toBe(0)
+  // Before a turn the right column is the gauge's row, a dash for the session, a dash for the turn and the buttons' row: four rows, and Clawd's five hold the card.
   expect(cardExtraRows(null, false, 100, null)).toBe(0)
-  // Advice, or a one-line suggestion, is a row of its own beneath the chips: the card is a row taller than the cat.
+  // With a turn counted, its chips stand two rows and the session's one: the right column is as tall as Clawd, five rows.
+  expect(cardExtraRows(null, false, 100, TURN)).toBe(0)
+  // Advice, or a one-line suggestion, is a row of its own beneath the chips: the card is a row taller than Clawd.
   expect(cardExtraRows(null, true, 100, TURN)).toBe(1)
   expect(cardExtraRows(DEMO_SHORT, false, 120, TURN)).toBe(1)
   // Advice under a suggestion is one more; a suggestion that wraps in the right column, as many more as it wraps.
   expect(cardExtraRows(DEMO_SHORT, true, 120, TURN)).toBe(2)
   expect(cardExtraRows(DEMO_SHORT, false, 100, TURN)).toBe(2)
+  // The session's chips that wrap into more rows are asked for.
+  expect(cardExtraRows(null, false, 100, TURN, 2)).toBe(1)
 })
 
 test('the card’s wrapping boxes put no blank rows between the rows they wrap into: they have a gap between columns and none between rows', async ($, on) => {

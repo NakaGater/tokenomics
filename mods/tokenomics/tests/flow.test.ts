@@ -68,12 +68,12 @@ test('every request that follows a cut is spared it, and the figure grows with t
 
   await callBash($, 'a')
   await calls.clock.advance(4_000)
-  // No request has followed yet: the size as it was cut stands in, under the name it had.
+  // No request has followed yet: the size as it was cut stands in.
   const once = savedOnce(parseLedger(calls.store.get('ledger:v1')))
   expect(once).toBeGreaterThan(10_000)
   for (const ui of bands) {
     expect(await savedIn(ui)).toBe(`約 ${Math.round(once / 1000)}k tok`)
-    expect(await savedLabelIn(ui)).toBe('節約')
+    expect(await savedLabelIn(ui)).toBe('節約（延べ）')
   }
 
   await steps($, 1)
@@ -84,6 +84,12 @@ test('every request that follows a cut is spared it, and the figure grows with t
   await steps($, 2)
   // Three requests, each sent without it, though the band is not redrawn by the ledger being written: it follows at once.
   for (const ui of bands) expect(await savedIn(ui)).toBe(`約 ${Math.round((3 * once) / 1000)}k tok`)
+  // It stands in the session's row, the last of its chips, after the turns.
+  const texts = (await bands[0]!.findAll({ type: 'Text' })).map(t => t.text)
+  const at = texts.indexOf('節約（延べ）')
+  expect(texts.slice(at - 2, at + 2)).toEqual(['ターン', '1 回', '節約（延べ）', `約 ${Math.round((3 * once) / 1000)}k tok`])
+  expect(texts.indexOf('現在のセッションの合計')).toBeLessThan(at)
+  expect(at).toBeLessThan(texts.indexOf('現在のターンの合計'))
 
   const ledger = await ledgerOf($, calls)
   expect(count(ledger, 'A1:signal:auto:flow')).toBe(3)
@@ -192,6 +198,48 @@ describe('the window starts over', () => {
     expect(sum(ledger, 'A1:flowTokens')).toBe(3 * (savedOnce(ledger) / 2))
   })
 
+  test('/clear starts the session’s figure over, as it does its tokens and turns; the pane goes on telling the day’s', AUTO, async ($, on) => {
+    const calls = engine(on, { tmp: TMP })
+    on('tool.call', () => bash(log()))
+    await $.session.start(START)
+    const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
+    const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+
+    await callBash($, 'a')
+    await steps($, 2)
+    await calls.clock.advance(4_000)
+    const once = savedOnce(parseLedger(calls.store.get('ledger:v1')))
+    for (const ui of bands) expect(await savedIn(ui)).toBe(`約 ${Math.round((2 * once) / 1000)}k tok`)
+    expect(await pane.find({ type: 'Text', text: 'このセッションの節約' })).toBeDefined()
+
+    await $.session.end({ reason: 'clear' } as never)
+    for (const ui of bands) expect(await savedIn(ui)).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: 'このセッションの節約' })).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: '今日の節約（確定）' })).toBeDefined()
+
+    // What is cut after it adds up from nothing again.
+    await callBash($, 'b')
+    await steps($, 1)
+    for (const ui of bands) expect(await savedIn(ui)).toBe(`約 ${Math.round(once / 1000)}k tok`)
+  })
+
+  test('a compaction stops the adding but keeps the session’s total', AUTO, async ($, on) => {
+    const calls = engine(on, { tmp: TMP })
+    on('tool.call', () => bash(log()))
+    await $.session.start(START)
+    const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
+
+    await callBash($, 'a')
+    await steps($, 2)
+    await calls.clock.advance(4_000)
+    const once = savedOnce(parseLedger(calls.store.get('ledger:v1')))
+    await $.session.compact({ trigger: 'manual', messages: MESSAGES } as never)
+    await steps($, 3)
+
+    // Two requests carried the cut; the three after the compaction did not, and nothing was taken back.
+    for (const ui of bands) expect(await savedIn(ui)).toBe(`約 ${Math.round((2 * once) / 1000)}k tok`)
+  })
+
   for (const trigger of ['manual', 'auto'] as const) {
     test(`a compaction (${trigger}): the same`, AUTO, async ($, on) => {
       const calls = engine(on, { tmp: TMP })
@@ -253,12 +301,14 @@ describe('the window starts over', () => {
   })
 })
 
-test('an old ledger, with cuts and no requests counted, keeps the band where it was', async ($, on) => {
+test('what other sessions kept out today is not this session’s: the band does not say it, the pane says it as the day’s', async ($, on) => {
   const seeded = append(emptyLedger, { kind: 'fired', measure: 'A1', mode: 'auto', arm: 'treat', n: { inChars: 30_000, outChars: 5_000, savedTokens: 8_611, savedMilliUsd: 47 } }, 1_000_000, 'old')
   engine(on, { tmp: TMP, store: { 'ledger:v1': seeded } })
   await $.session.start(START)
   const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
 
-  expect(await savedIn(ui)).toBe('約 8.6k tok')
-  expect(await savedLabelIn(ui)).toBe('節約')
+  expect(await savedIn(ui)).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: '今日の節約（確定）' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'このセッションの節約' })).toBeUndefined()
 })

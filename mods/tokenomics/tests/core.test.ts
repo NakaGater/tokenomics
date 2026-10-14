@@ -32,7 +32,7 @@ import {
   sumCounts,
 } from '../hooks/lib/core/ledger'
 import { DEFAULT_OPTIONS, cacheTtlMs, parseOptions } from '../hooks/lib/core/options'
-import { savedAll, savingsRows } from '../hooks/lib/status'
+import { savedAll, savingsRows, sessionSavingRows } from '../hooks/lib/status'
 import { BREAKER_LIMIT, MEASURES, MEASURE_IDS, armOf, failed, isTripped, modeOf, succeeded } from '../hooks/lib/core/policy'
 import type { Savings } from '../types'
 
@@ -378,7 +378,7 @@ describe('savings rows', () => {
   test('the estimate for work handed to a skill or agent is a row of its own, called an estimate; where there are two kinds a row on top adds them up', () => {
     const rows = savingsRows({ ...handed, digests: 3, tokens: 21_000, milliUsd: 115, wouldFire: 2 }, false)
     expect(rows.map(r => r.label)).toEqual(['今日の節約（合計）', '今日の節約（確定）', '今日の節約（推定）', '記録のみ'])
-    expect(rows[0]!.value).toBe('約 41k tok ＝ 確定 21k ＋ 推定 20k（帯の「節約」と同じ数字。推定を含む）')
+    expect(rows[0]!.value).toBe('約 41k tok ＝ 確定 21k ＋ 推定 20k（今日、この端末のすべてのセッションの分。推定を含む）')
     expect(rows[1]!.value).toContain('約 21k tok')
     expect(rows[2]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）、見込み約 $0.60。任せた先の費用は約 $0.00（入力側）で、差し引き 約 $0.60')
     // One kind alone is its own total: there is nothing to add up.
@@ -395,27 +395,37 @@ describe('savings rows', () => {
     expect(rows[0]!.value).toContain('約 55k tok ＝ 確定 21k ＋ 推定 20k ＋ サブエージェント内 15k')
   })
 
-  test('the band’s figure is every kind added up, and its name says what is in it', () => {
-    expect(savedAll(NOTHING)).toMatchObject({ tokens: 0, label: '節約' })
-    expect(savedAll({ ...day })).toMatchObject({ tokens: 21_000, label: '節約' })
-    expect(savedAll({ ...NOTHING, forks: 2, keptTokens: 19_600 })).toMatchObject({ tokens: 19_600, label: '節約（推定含む）' })
-    expect(savedAll({ ...NOTHING, subCuts: 1, subTokens: 700 })).toMatchObject({ tokens: 700, label: '節約（推定含む）' })
-    expect(savedAll({ ...day, forks: 2, keptTokens: 19_600, subCuts: 4, subTokens: 14_755 })).toMatchObject({ tokens: 55_355, label: '節約（推定含む）' })
+  test('the band’s figure is every kind added up, and says whether an estimate is in it', () => {
+    expect(savedAll(NOTHING)).toMatchObject({ tokens: 0, isEstimated: false })
+    expect(savedAll({ ...day })).toMatchObject({ tokens: 21_000, isEstimated: false })
+    expect(savedAll({ ...NOTHING, forks: 2, keptTokens: 19_600 })).toMatchObject({ tokens: 19_600, isEstimated: true })
+    expect(savedAll({ ...NOTHING, subCuts: 1, subTokens: 700 })).toMatchObject({ tokens: 700, isEstimated: true })
+    expect(savedAll({ ...day, forks: 2, keptTokens: 19_600, subCuts: 4, subTokens: 14_755 })).toMatchObject({ tokens: 55_355, isEstimated: true })
   })
 
   test('where requests were counted, each kind is what it spared them (延べ), never less than the size it was cut at', () => {
     const spread = { ...day, flowReqs: 40, flowTokens: 400_000 }
-    expect(savedAll(spread)).toMatchObject({ tokens: 400_000, label: '節約（延べ）' })
+    expect(savedAll(spread)).toMatchObject({ tokens: 400_000, isSpread: true })
     // The requests of the day do not reach back to what was cut the evening before: its size stands in.
-    expect(savedAll({ ...spread, flowTokens: 5_000 })).toMatchObject({ tokens: 21_000, label: '節約（延べ）' })
-    expect(savedAll({ ...spread, forks: 2, keptTokens: 19_600, flowKeptTokens: 90_000, subCuts: 1, subTokens: 700 })).toMatchObject({ tokens: 490_700, label: '節約（延べ・推定含む）' })
+    expect(savedAll({ ...spread, flowTokens: 5_000 })).toMatchObject({ tokens: 21_000, isSpread: true })
+    expect(savedAll({ ...spread, forks: 2, keptTokens: 19_600, flowKeptTokens: 90_000, subCuts: 1, subTokens: 700 })).toMatchObject({ tokens: 490_700, isSpread: true, isEstimated: true })
+    expect(savedAll(day).isSpread).toBe(false)
+  })
+
+  test('the session’s row is the band’s figure with what it is made of, and is not there when nothing was kept out', () => {
+    expect(sessionSavingRows(NOTHING)).toEqual([])
+    const [alone] = sessionSavingRows(day)
+    expect(alone!.label).toBe('このセッションの節約')
+    expect(alone!.value).toBe('約 21k tok（帯の「節約（延べ）」と同じ数字）＝ 確定 21k。/clear で数え直します')
+    const [all] = sessionSavingRows({ ...day, flowReqs: 40, flowTokens: 400_000, forks: 2, keptTokens: 19_600, subCuts: 4, subTokens: 14_755 })
+    expect(all!.value).toBe('約 434k tok（帯の「節約（延べ）」と同じ数字）＝ 確定 400k ＋ 推定 20k ＋ サブエージェント内 15k。確定と推定は延べ。推定を含む。/clear で数え直します')
   })
 
   test('the 延べ row counts the requests, tells the dollars off a subscription only, and takes the assumed dollars out of the 確定 row', () => {
     const spread = { ...day, flowReqs: 40, flowTokens: 400_000, flowMicroUsd: 31_000 }
     const rows = savingsRows(spread, false)
     expect(rows.map(r => r.label)).toEqual(['今日の節約（合計）', '今日の節約（延べ）', '今日の節約（確定）', '記録のみ'])
-    expect(rows[0]!.value).toBe('約 400k tok ＝ 確定 400k（帯の「節約」と同じ数字。確定と推定は延べ）')
+    expect(rows[0]!.value).toBe('約 400k tok ＝ 確定 400k（今日、この端末のすべてのセッションの分。確定と推定は延べ）')
     expect(rows[1]!.value).toContain('のべ 40 回のリクエストに載らずに済みました（延べ約 400k tok、入力側の見込み約 $0.03）')
     // One dollar amount: the measured one.
     expect(rows[2]!.value).toBe('大きな出力を 3 回縮め、約 21k tok を会話に入れずに済みました')

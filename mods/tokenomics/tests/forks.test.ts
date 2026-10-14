@@ -3,7 +3,7 @@ import { type Engine, describe, expect, test } from 'claude-code/testing'
 import { MAX_FORKS, forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId, ownName } from '../hooks/lib/core/forks'
 import { parseLedger } from '../hooks/lib/core/ledger'
 
-import { type Calls, SURFACES, bandProps, engine, paneProps, runStep, savedIn, savedLabelIn } from './kit'
+import { type Calls, SURFACES, bandProps, engine, paneProps, runStep, savedIn, savedLabelIn, savedValueIn } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 
@@ -308,7 +308,7 @@ test('the text report says it too', async ($, on) => {
   expect(ran.text).toContain('控えめな推定')
 })
 
-test('the band counts it in its one figure, and the label says an estimate is in it', async ($, on) => {
+test('the session’s row in the band counts it in its one figure, called 節約（延べ）', async ($, on) => {
   const calls = engine(on)
   scoutForks(on)
   const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
@@ -317,7 +317,7 @@ test('the band counts it in its one figure, and the label says an estimate is in
 
   for (const ui of bands) {
     expect(await savedIn(ui)).toBe('約 20k tok')
-    expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+    expect(await savedLabelIn(ui)).toBe('節約（延べ）')
     // No chip of its own any more: the pane tells it apart.
     expect(await ui.find({ type: 'Text', text: '委任（推定）' })).toBeUndefined()
   }
@@ -329,7 +329,9 @@ test('a person held back from the savings is not shown the estimate, though the 
   const band = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await handOver($, calls)
 
+  // The row has its saving all the same, and it is none.
   expect(await savedIn(band)).toBeUndefined()
+  expect(await savedValueIn(band)).toBe('0 tok')
   const ran = await $.command.run(RUN as never)
   expect(ran.text).not.toContain('任せ')
   expect(sum(await ledgerOf($, calls), 'B1:keptTokens')).toBe(19_800)
@@ -344,13 +346,13 @@ test('what a run kept out is spared every request that follows it, and the band 
   scoutForks(on)
   const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
   await handOver($, calls)
-  for (const ui of bands) expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+  for (const ui of bands) expect(await savedLabelIn(ui)).toBe('節約（延べ）')
 
   await runStep($ as never)
   await runStep($ as never)
   for (const ui of bands) {
     expect(await savedIn(ui)).toBe('約 40k tok')
-    expect(await savedLabelIn(ui)).toBe('節約（延べ・推定含む）')
+    expect(await savedLabelIn(ui)).toBe('節約（延べ）')
   }
   const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: '今日の節約（延べ）' })).toBeDefined()

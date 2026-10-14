@@ -46,7 +46,7 @@ import { ASSUMED_TURNS_AFTER, coldTurnUsd, heavyLevel, keptOutUsd, milliUsd, mod
 import { type KeptItem, requestFlow } from './lib/core/flow'
 import { forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId } from './lib/core/forks'
 import { shortHash } from './lib/core/hash'
-import { type Kind, type RawEvent, appendRaw, emptyLedger, digestThreshold, exportLedger, parseLedger, retiredNudges, savingsToday, sessionKey } from './lib/core/ledger'
+import { type Kind, MAX_DAYS, type RawEvent, appendRaw, emptyLedger, digestThreshold, exportLedger, parseLedger, retiredNudges, savingsToday, sessionKey } from './lib/core/ledger'
 import { ANSWER_TURNS, clearStakeUsd, coldReturn, risen, topicShift } from './lib/core/moments'
 import { type Candidate, DEMO_LINE, DEMO_SHORT, chooseNudge, nudgeLine, nudgeShort } from './lib/core/nudges'
 import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
@@ -83,7 +83,7 @@ const DIALOG_TAKES_KEYS = false
 const KINDS = Object.keys(OFFER_NAMES) as OfferKind[]
 
 /**
- * Whether the cat, the band, the pane and the dialog are drawn (the `hud` setting). Off, the mod draws nothing and puts no
+ * Whether Clawd, the band, the pane and the dialog are drawn (the `hud` setting). Off, the mod draws nothing and puts no
  * suggestion to the person, and the savings layer (hooks/core.ts) goes on as before. A change of setting loads the module again.
  */
 let isHud = true
@@ -104,18 +104,18 @@ let stepShapes: StepShape[] = []
 /** The turn running (or last run) was set going by something sent in, not by the person. */
 let isSentInTurn = false
 
-// The cat on the band moves faster than anything is redrawn, so it lives here and is repainted with `$.ui.blit`:
+// Clawd on the band moves faster than anything is redrawn, so it lives here and is repainted with `$.ui.blit`:
 // one call a frame, no render pass. What it needs of the session is mirrored from the facts as they change.
-/** The band's own id once it has drawn the cat; null while nothing is showing it, which also stops the timer. */
+/** The band's own id once it has drawn Clawd; null while nothing is showing it, which also stops the timer. */
 let catSite: string | null = null
 let catTimer: { cancel: () => void } | null = null
 /** Milliseconds the pending timer was set for. */
 let catDueMs = 0
 /** The latest facts, for the timer to read without asking the engine for them every frame. */
 let catFacts: Facts = initialFacts
-/** Frames shown since the cat last changed what it was doing. */
+/** Frames shown since Clawd last changed what it was doing. */
 let catSteps = 0
-/** Milliseconds the person has been quiet; at five minutes the cat curls up and the timer stops. */
+/** Milliseconds the person has been quiet; at five minutes Clawd curls up and the timer stops. */
 let catIdleMs = 0
 /** Frames of a jump still to play. */
 let catJumpLeft = 0
@@ -127,15 +127,15 @@ let catPhrase = ''
 let catShown = ''
 
 /**
- * Whether the cat is drawn as a picture. The terminal's own words decide whether to try (`imageHint`); the first repaint
- * answers: a blit to a picture the terminal cannot draw is refused. After that the cat is drawn in cells.
+ * Whether Clawd is drawn as a picture. The terminal's own words decide whether to try (`imageHint`); the first repaint
+ * answers: a blit to a picture the terminal cannot draw is refused. After that Clawd is drawn in cells.
  */
 let catImages: 'maybe' | 'yes' | 'no' = 'maybe'
 /** What the terminal's own words say of pictures; null until read, at the first draw of the band or the start of a session (a reload has no start). */
 let imageHint: boolean | null = null
 /** The picture last painted, so a redraw of the band carries on from the frame on show. */
 let catShownPng = ''
-/** The band's last draw gave the cat as a picture. */
+/** The band's last draw gave Clawd as a picture. */
 let catAsImage = false
 let imageProbe: { cancel: () => void } | null = null
 
@@ -166,15 +166,15 @@ const nudge = atom({ plugin: 'tokenomics', key: 'nudge' } as const, null as stri
 const windowPick = atom({ plugin: 'tokenomics', key: 'windowPick' } as const, null as number | null)
 const isSettingWindow = atom({ plugin: 'tokenomics', key: 'isSettingWindow' } as const, false)
 
-/** Paints the cat's next frame and asks for the one after it, at the pace its speed calls for. */
+/** Paints Clawd's next frame and asks for the one after it, at the pace its speed calls for. */
 const stepCat = async ($: Dollar): Promise<void> => {
   catTimer = null
-  // Reduced motion: the cat stands where it is. (A picture for each state is still drawn, with the band.)
+  // Reduced motion: Clawd stands where it is. (A picture for each state is still drawn, with the band.)
   if (catSite === null || catFacts.isMotionReduced) return
   const view = catView(catFacts, catState())
   catShown = catCells(view.look)
   catShownPng = catPng(view.look)
-  // The words beside the cat follow what it is doing: a change of state, not of frame, draws the band again.
+  // The words beside Clawd follow what it is doing: a change of state, not of frame, draws the band again.
   if (view.phrase !== catPhrase) {
     catPhrase = view.phrase
     $.ui.invalidate('ui.render')
@@ -207,7 +207,7 @@ const stepCat = async ($: Dollar): Promise<void> => {
   } else {
     catIdleMs += view.periodMs
   }
-  // A cat curled up for the night needs no timer: the person's next word wakes it.
+  // Clawd curled up for the night needs no timer: the person's next word wakes it.
   if (view.isResting && catJumpLeft === 0 && catDemo === null) return
   catDueMs = view.periodMs
   catTimer = $.clock.after(view.periodMs, () => void stepCat($))
@@ -219,14 +219,14 @@ const startCat = ($: Dollar, afterMs: number): void => {
   catTimer = $.clock.after(afterMs, () => void stepCat($))
 }
 
-/** The terminal draws no pictures: the cat goes back to cells, and the band is drawn again to say so. */
+/** The terminal draws no pictures: Clawd goes back to cells, and the band is drawn again to say so. */
 const giveUpImages = ($: Dollar): void => {
   catImages = 'no'
   catAsImage = false
   $.ui.invalidate('ui.render')
 }
 
-/** Asks the terminal once, with the picture on screen, whether it draws it; a cat curled up has no timer to ask for it. */
+/** Asks the terminal once, with the picture on screen, whether it draws it; Clawd, curled up, has no timer to ask for it. */
 const probeImage = async ($: Dollar): Promise<void> => {
   imageProbe = null
   if (catSite === null || !catAsImage || catImages !== 'maybe') return
@@ -254,7 +254,7 @@ const imagesLikely = async ($: Dollar): Promise<boolean> => {
   return program === 'ghostty' || program === 'kitty'
 }
 
-/** A cat that has just been asked to go faster should not wait out a slow frame: the pending one is brought forward. */
+/** Clawd, just asked to go faster, should not wait out a slow frame: the pending one is brought forward. */
 const hurryCat = ($: Dollar, f: Facts): void => {
   if (catTimer === null || catView(f, catState()).periodMs >= catDueMs) return
   catTimer.cancel()
@@ -262,13 +262,13 @@ const hurryCat = ($: Dollar, f: Facts): void => {
   startCat($, 1)
 }
 
-/** The person did something: the cat is awake. */
+/** The person did something: Clawd is awake. */
 const nudgeCat = ($: Dollar): void => {
   catIdleMs = 0
   startCat($, 1)
 }
 
-/** Lighter at last: the cat jumps for joy. */
+/** Lighter at last: Clawd jumps for joy. */
 const jumpCat = ($: Dollar): void => {
   if (catFacts.isMotionReduced) return
   catJumpLeft = JUMP_STEPS
@@ -298,7 +298,7 @@ const stopCat = (): void => {
   catSite = null
 }
 
-/** A session begins (or the module was loaded again): the cat starts over, curled up. */
+/** A session begins (or the module was loaded again): Clawd starts over, curled up. */
 const resetCat = (): void => {
   stopCat()
   catFacts = initialFacts
@@ -343,7 +343,7 @@ const closeOffer = async ($: Dollar): Promise<OpenOffer | null> => {
   return open
 }
 
-/** The one-line suggestion in the cat's card is for the moment after a reply; it goes when that moment has passed. */
+/** The one-line suggestion in the band's card is for the moment after a reply; it goes when that moment has passed. */
 const clearNudge = async ($: Dollar): Promise<void> => {
   if ((await read($, nudge)) === null) return
   await update($, nudge, () => null)
@@ -1030,7 +1030,7 @@ const targetOf = (input: unknown): string | undefined => {
 }
 
 // ── The savings layer ──────────────────────────────────────────────────────────────────────────────
-// It works from hooks alone, so it is as much at home in `claude -p` as in a terminal; the cat above does not come into it.
+// It works from hooks alone, so it is as much at home in `claude -p` as in a terminal; Clawd above does not come into it.
 // What it decides is in lib/core (pure, and tested apart); what is here is only the asking of `$` and the doing. It is
 // in this file because the checker follows `$` only into functions declared in the file it is passed in, and because a
 // module may hook an event once: the hooks below call these.
@@ -1043,9 +1043,10 @@ const FLUSH_AT = 20
 
 const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 }
 const savings = atom({ plugin: 'tokenomics', key: 'savings' } as const, emptySavings)
-/** Everything the savings layer has kept out today, added up as the band says it (see `svShow`), and the name it goes by. */
-let savedToday = 0
-let savedLabel = '節約'
+/** The same for the session only (this process, since it began or was last cleared): the figure the band says, and the pane beside the day's. */
+const sessionSavings = atom({ plugin: 'tokenomics', key: 'sessionSavings' } as const, emptySavings)
+/** Everything the savings layer has kept out in this session, added up as the band says it (see `svShow`). */
+let savedHere = 0
 
 const sv = freshState(parseOptions(undefined))
 let svReady: Promise<void> | null = null
@@ -1062,7 +1063,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.10'
+const MOD_VERSION = '0.7.0'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1088,22 +1089,28 @@ const svInit = async ($: Dollar): Promise<void> => {
 /** A reload never sees `session.start`, so whatever needs the session asks for it here, once. */
 const svEnsure = ($: Dollar): Promise<void> => (svReady ??= svInit($))
 
-/** Shows today's figures to whoever reads them (the pane), when they have changed. */
+/** A person held back from the savings (to be compared with the rest) is not shown an estimate of them either. */
+const heldBack = (s: Savings): Savings => ({ ...s, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 })
+
+const isSame = (a: Savings, b: Savings): boolean => (Object.keys(a) as (keyof Savings)[]).every(k => a[k] === b[k])
+
+/** Shows today's figures, and the session's, to whoever reads them (the pane, the band), when they have changed. */
 const svShow = async ($: Dollar): Promise<void> => {
-  const today = savingsToday(sv.ledger, await $.clock.now())
-  // A person held back from the savings (to be compared with the rest) is not shown an estimate of them either.
-  const next: Savings = sv.arm === 'control' ? { ...today, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 } : today
-  const now = await read($, savings)
-  if ((Object.keys(next) as (keyof Savings)[]).some(k => now[k] !== next[k])) {
-    await update($, savings, () => next)
-  }
-  // The band says the saved tokens too, all kinds added up in one figure, and only it redraws the band: the pane's other figures
-  // change more often, and nothing else redraws the band when the ledger is written. Kept apart from the atom for that reason.
-  // Added up from `next`, so a person held back from the savings is shown none of it.
-  const all = savedAll(next)
-  if (all.tokens !== savedToday || all.label !== savedLabel) {
-    savedToday = all.tokens
-    savedLabel = all.label
+  const now = await $.clock.now()
+  const control = sv.arm === 'control'
+  const today = savingsToday(sv.ledger, now)
+  const here = savingsToday(sv.mine, now, MAX_DAYS)
+  const next = control ? heldBack(today) : today
+  const nextHere = control ? heldBack(here) : here
+  if (!isSame(await read($, savings), next)) await update($, savings, () => next)
+  const hereWas = await read($, sessionSavings)
+  if (!isSame(hereWas, nextHere)) await update($, sessionSavings, () => nextHere)
+  // The band says the saved tokens too, all kinds added up in one figure for the session, and only it redraws the band: the pane's
+  // other figures change more often, and nothing else redraws the band when the ledger is written. Kept apart from the atom for that reason.
+  // Added up from `nextHere`, so a person held back from the savings is shown none of it.
+  const all = savedAll(nextHere)
+  if (all.tokens !== savedHere) {
+    savedHere = all.tokens
     $.ui.invalidate('ui.render')
   }
 }
@@ -1167,6 +1174,7 @@ const svRecord = async (
     }
     sv.pending.push(raw)
     sv.ledger = appendRaw(sv.ledger, raw)
+    sv.mine = appendRaw(sv.mine, raw)
     if (sv.pending.length >= FLUSH_AT) await svFlush($)
     else svSchedule($)
   } catch {
@@ -1436,7 +1444,7 @@ const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | u
     undefined,
   )
 
-/** A suggestion in two lengths: `long` as a row of its own after the reply (where there is no card), `short` for the cat's card. */
+/** A suggestion in two lengths: `long` as a row of its own after the reply (where there is no card), `short` for the band's card. */
 type NudgeText = { long: string; short: string }
 
 /**
@@ -1856,7 +1864,7 @@ export const register: Register = (on, options) => {
       sv.demoNudge = true
       return {
         text: isHud
-          ? '次の返信のあと、猫のカードの一言（「小走りです」などが出ている所）に、提案の表示テストが出ます。'
+          ? '次の返信のあと、帯のカードの一言（「小走りです」などが出ている所）に、提案の表示テストが出ます。'
           : '次の返信のあとに、提案の表示テストが一行出ます。',
       }
     }
@@ -1867,7 +1875,7 @@ export const register: Register = (on, options) => {
     // Too narrow to seat a pane: say the same thing as text.
     const ctx = await offerContext($)
     if (isSettings) return { text: settingsReport(ctx.facts, activeSavings(ctx.modes, isNoteByDefault()), await read($, muted)) }
-    return { text: report(ctx.facts, computeAdvice(ctx.facts), standingOffers(ctx, await read($, muted)), await read($, savings)) }
+    return { text: report(ctx.facts, computeAdvice(ctx.facts), standingOffers(ctx, await read($, muted)), await read($, savings), await read($, sessionSavings)) }
   }).catch(($, e, next) =>
     next.called ? next(e) : { text: `${$.plugin.name}: うまく開けませんでした。もう一度お試しください。` },
   )
@@ -1912,7 +1920,7 @@ export const register: Register = (on, options) => {
         requestsThisTurn = []
         const now = await $.clock.now()
         await change($, f => applyTurn(f, turn, now, toolsThisTurn, e.answer.length, isSentInTurn, requests))
-        // The first response measures what an empty session holds, which the cat's speed is counted from. The size the engine
+        // The first response measures what an empty session holds, which Clawd's speed is counted from. The size the engine
         // auto-compacts at, which the gauge counts against, can change under us (/autocompact, a model switch): read again now and then.
         if ((await read($, facts)).baselineTokens === null || now - breakdownAt >= BREAKDOWN_EVERY_MS) await refreshUsage($, true)
         else refreshHeavyLater($)
@@ -1925,7 +1933,7 @@ export const register: Register = (on, options) => {
     // A one-line suggestion (the reply itself is left as it is). Only a reply that ended in an answer.
     const line = e.agentId === undefined && e.reason === 'answer' ? await svNudge($, e.usage) : undefined
     if (line === undefined) return done
-    // With the cat on it stands in the cat's card, in place of the phrase; with it off there is no card, and it is a row after the reply.
+    // With Clawd on it stands in the band's card, in place of the phrase; with it off there is no card, and it is a row after the reply.
     if (!isHud) return { ...done, text: line.long }
     await update($, nudge, () => line.short)
     $.ui.invalidate('ui.render')
@@ -2051,7 +2059,7 @@ export const register: Register = (on, options) => {
 
   // The cap on how hard turns think, once the person has accepted one. Only the main conversation's own
   // steps, and only ever lowering. The effort it asks for is noted, so a suggestion knows what it would lower.
-  // The person turns "Reduce motion" on or off in /config: the cat stops, or sets off again.
+  // The person turns "Reduce motion" on or off in /config: Clawd stops, or sets off again.
   on('config.set', { key: 'reduceMotion' }, async ($, e, next) => {
     const done = await next(e)
     if (done.deny === undefined) {
@@ -2316,8 +2324,7 @@ export const register: Register = (on, options) => {
       facts: f,
       advice: nextAdvice(f, [...(await read($, dismissed)), ...(modeFor('C3') === 'suggest' ? ['cache-lapse'] : [])]),
       nudge: await read($, nudge),
-      savedTokens: savedToday,
-      savedLabel,
+      savedTokens: savedHere,
       offer: card,
       tag: tagOf(await read($, modes)),
       isCompacting: (await read($, busy)) === 'compact',
@@ -2370,6 +2377,7 @@ export const register: Register = (on, options) => {
       advice: computeAdvice(ctx.facts),
       offers: standingOffers(ctx, await read($, muted)),
       savings: await read($, savings),
+      sessionSavings: await read($, sessionSavings),
       heavy: await read($, heavy),
       isCompacting: (await read($, busy)) === 'compact',
       rows: e.viewport?.rows ?? 24,
