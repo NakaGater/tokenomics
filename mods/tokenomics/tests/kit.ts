@@ -404,6 +404,8 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
     return { value: { agent: `tokenomics:${e.name}` } }
   })
   on('agent.offer', () => ({ isOffered: true }))
+  // What the engine composes before any plugin adds to it: one section of its own.
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are a coding assistant.', scope: 'shared' as const }] }))
 
   on('turn.step', async function* (_$, e) {
     calls.steps.push({ model: e.model, effort: e.effort, agentId: e.agentId })

@@ -52,6 +52,7 @@ import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
 import { type MeasureId, armOf, failed, isTripped, modeOf, succeeded } from './lib/core/policy'
 import { freshState, resetConversation, resetSession, touch } from './lib/core/state'
 import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, steerTurn } from './lib/core/steer'
+import { BATCH_SECTION, batchGroupOf } from './lib/core/batch'
 import { readPathOf, requestShape, type StepShape } from './lib/core/shape'
 import { advisorMs, advisorRead, noteOpenedBy, noteWritten, subagentSpend } from './lib/core/spend'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
@@ -1059,7 +1060,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.7'
+const MOD_VERSION = '0.6.8'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1502,10 +1503,65 @@ const tallyCall = (what: 'readOnly' | 'refused'): void => {
 const svShape = async ($: Dollar, steps: readonly StepShape[]): Promise<void> => {
   try {
     const n = requestShape(steps)
-    if (n !== null) await svRecord($, 'S', 'observe', 'signal', 'request_shape', n, true)
+    if (n === null) return
+    await svRecord($, 'S', 'observe', 'signal', 'request_shape', n, true)
+    await svBatchTurn($, n)
   } catch {
     // For looking back at; the turn goes on.
   }
+}
+
+/**
+ * B7: whether this render of the system prompt carries the sentence asking for reads that do not depend on each other to be put into
+ * one response. In `auto`, half of the sessions do (`batchGroupOf`) and the other half are left without it, to be compared with; in
+ * `observe` none does, and the ledger says it would have. The session's half is written once, not at every render; a one-line prompt
+ * (`bare`) takes no section and is no part of the comparison.
+ */
+const svBatch = ($: Dollar, traits: readonly string[]): Promise<boolean> =>
+  svAttempt(
+    $,
+    'B7',
+    async () => {
+      await svEnsure($)
+      const m = modeFor('B7')
+      if (m === 'off' || traits.includes('bare')) return false
+      if (m !== 'auto') {
+        if (!sv.isBatchNoted) {
+          sv.isBatchNoted = true
+          await svRecord($, 'B7', m, 'would', 'session')
+        }
+        return false
+      }
+      sv.batchGroup ??= batchGroupOf(sv.sid)
+      if (!sv.isBatchNoted) {
+        sv.isBatchNoted = true
+        await svRecord($, 'B7', m, sv.batchGroup === 'on' ? 'fired' : 'signal', `session_${sv.batchGroup}`)
+      }
+      return sv.batchGroup === 'on'
+    },
+    false,
+  )
+
+/** B7: a turn's figures under its session's half, so the sessions given the sentence can be set against those left without it. */
+const svBatchTurn = async ($: Dollar, n: Record<string, number>): Promise<void> => {
+  const g = sv.batchGroup
+  if (g === null || modeFor('B7') !== 'auto') return
+  await svRecord(
+    $,
+    'B7',
+    'auto',
+    'signal',
+    `turns_${g}`,
+    {
+      [`reqs_${g}`]: n.shpReqs ?? 0,
+      [`calls_${g}`]: n.shpCalls ?? 0,
+      [`serial_${g}`]: n.shpSerial ?? 0,
+      [`serialTok_${g}`]: n.shpSerialTok ?? 0,
+      [`parallel_${g}`]: n.shpParallel ?? 0,
+      [`prompt_${g}`]: n.shpPromptTok ?? 0,
+    },
+    true,
+  )
 }
 
 /**
@@ -2017,6 +2073,15 @@ export const register: Register = (on, options) => {
   }).catch(async function* ($, e, next) {
     return yield* next(e)
   })
+
+  // B7: one sentence at the end of the system prompt, in half of the sessions (lib/core/batch). Added after the cache boundary, and the
+  // same at every render of a session, so it costs the cache nothing.
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    if (!(await svBatch($, e.traits))) return composed
+
+    return { sections: [...composed.sections, BATCH_SECTION] }
+  }).catch(($, e, next) => next(e))
 
   // The light agents the plugin ships (agents/) are heard of by the model only while delegation is `auto`: until then they would
   // be offered with no measurement behind them, and a file-defined agent cannot pin its permission mode, so it takes its parent's.

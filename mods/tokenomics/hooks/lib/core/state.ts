@@ -1,3 +1,4 @@
+import type { BatchGroup } from './batch'
 import type { RecentSpawn } from './downgrade'
 import type { ForkRun } from './forks'
 import type { Candidate } from './nudges'
@@ -72,6 +73,10 @@ export type CoreState = {
   readBack: Set<string>
   /** The notes written this session by file name (never the path), to count a note's first opening (`spend.ts`). */
   notes: Map<string, KnownNote>
+  /** B7: what the session was written down as in the ledger (once per session, however often the prompt is composed). */
+  isBatchNoted: boolean
+  /** B7: the half this session is in, once it is known that the sentence is being made a question of (`auto`, a prompt that takes a section); null otherwise. */
+  batchGroup: BatchGroup | null
 }
 
 export const freshState = (options: CoreOptions): CoreState => ({
@@ -110,6 +115,8 @@ export const freshState = (options: CoreOptions): CoreState => ({
   steer: freshSteer(),
   readBack: new Set(),
   notes: new Map(),
+  isBatchNoted: false,
+  batchGroup: null,
 })
 
 /** A new session: what belonged to the last conversation is forgotten. */
@@ -136,6 +143,8 @@ export const resetSession = (s: CoreState): void => {
   s.steer = freshSteer()
   s.readBack.clear()
   s.notes.clear()
+  s.isBatchNoted = false
+  s.batchGroup = null
 }
 
 /** `/clear`: the conversation is gone, the session goes on. */

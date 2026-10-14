@@ -43,6 +43,8 @@ describe('the shape of a turn’s requests', () => {
     expect(n.shpReqs).toBe(3)
     expect(n.shpPromptTok).toBe(6_000)
     expect(n.shpTools).toBe(2)
+    // Calls, not requests: the two that came together are two.
+    expect(n.shpCalls).toBe(3)
   })
 
   test('reads asked for together are the model batching already, and are no pair', () => {
@@ -191,6 +193,7 @@ test('a turn is recorded by the shape of its requests, in counts and sums, and n
   expect(count(ledger, 'S:signal:observe:request_shape')).toBe(1)
   expect(sum(ledger, 'S:shpReqs')).toBe(5)
   expect(sum(ledger, 'S:shpTools')).toBe(4)
+  expect(sum(ledger, 'S:shpCalls')).toBe(5)
   expect(sum(ledger, 'S:shpParallel')).toBe(1)
   // Only the second request is a lone read followed by another read request; the first is a batch, and the third is followed by a write.
   expect(sum(ledger, 'S:shpSerial')).toBe(1)

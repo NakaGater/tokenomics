@@ -50,8 +50,8 @@ describe('options', () => {
   })
 
   test('values that fit are taken, and numbers are held to their range', () => {
-    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', handoffNote: false, holdoutPercent: 250, cacheTtlMinutes: 500 })
-    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', handoffNote: false, holdoutPercent: 100, cacheTtlMinutes: 120 })
+    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', batch: 'off', nudges: 'off', handoffNote: false, holdoutPercent: 250, cacheTtlMinutes: 500 })
+    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', batch: 'off', nudges: 'off', handoffNote: false, holdoutPercent: 100, cacheTtlMinutes: 120 })
     expect(parseOptions({ cacheTtlMinutes: -3 }).cacheTtlMinutes).toBe(0)
   })
 
@@ -140,8 +140,8 @@ describe('policy', () => {
   const treat = (over: Partial<typeof DEFAULT_OPTIONS> = {}) => ({ ...DEFAULT_OPTIONS, ...over })
 
   test('every measure has a row, owned by one of the settings', () => {
-    expect(MEASURE_IDS).toEqual(['A1', 'B1', 'B2', 'B3', 'B6', 'C1', 'C2', 'C3'])
-    for (const id of MEASURE_IDS) expect(['digest', 'delegation', 'steer', 'nudges']).toContain(MEASURES[id].option)
+    expect(MEASURE_IDS).toEqual(['A1', 'B1', 'B2', 'B3', 'B6', 'B7', 'C1', 'C2', 'C3'])
+    for (const id of MEASURE_IDS) expect(['digest', 'delegation', 'steer', 'batch', 'nudges']).toContain(MEASURES[id].option)
   })
 
   test('the defaults: the digest acts, the subagent and suggestion measures watch', () => {
@@ -163,6 +163,16 @@ describe('policy', () => {
     expect(modeOf('B6', treat({ delegation: 'auto' }), 'treat')).toBe('observe')
     expect(modeOf('B6', treat({ steer: 'auto' }), 'treat')).toBe('auto')
     expect(modeOf('B1', treat({ steer: 'auto' }), 'treat')).toBe('observe')
+  })
+
+  test('the sentence about reads (B7) has its own setting, which is on unless it is turned down, and is not reached by the others', () => {
+    expect(modeOf('B7', treat(), 'treat')).toBe('auto')
+    expect(modeOf('B7', treat({ batch: 'observe' }), 'treat')).toBe('observe')
+    expect(modeOf('B7', treat({ batch: 'off' }), 'treat')).toBe('off')
+    expect(modeOf('B7', treat({ steer: 'auto', delegation: 'auto', digest: 'off' }), 'treat')).toBe('auto')
+    expect(modeOf('B6', treat({ batch: 'auto' }), 'treat')).toBe('observe')
+    // A person held back is told nothing more than anyone: the sentence is only watched for.
+    expect(modeOf('B7', treat(), 'control')).toBe('observe')
   })
 
   test('the digest, where there is no place of the person’s own to keep its copies, only watches', () => {

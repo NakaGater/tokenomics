@@ -42,6 +42,7 @@ const isReadStep = (s: StepShape): boolean => s.asked > 0 && s.readOnly >= s.ask
  *   shpReqs       requests in the turn
  *   shpPromptTok  the prompts they sent, summed (what the figures below are set against)
  *   shpTools      requests that asked for a tool
+ *   shpCalls      tool calls asked for, in all (a request that asks for more than it needs shows here)
  *   shpParallel   requests that asked for two or more reads at once: the model batching, already
  *   shpSerial     a request with exactly one read, followed by a request that also only reads. UPPER BOUND on the requests that
  *                 could have been folded into the one before
@@ -56,6 +57,7 @@ export const requestShape = (all: readonly StepShape[]): Record<string, number> 
   const steps = all.filter(s => s.prompt > 0)
   if (steps.length === 0) return null
   let tools = 0
+  let calls = 0
   let parallel = 0
   let serial = 0
   let serialTok = 0
@@ -64,6 +66,7 @@ export const requestShape = (all: readonly StepShape[]): Record<string, number> 
   let refusedTok = 0
   steps.forEach((s, i) => {
     if (s.asked > 0) tools += 1
+    calls += s.asked
     if (isReadStep(s) && s.asked >= 2) parallel += 1
     if (s.refused > 0) refused += 1
     const next = steps[i + 1]
@@ -80,6 +83,7 @@ export const requestShape = (all: readonly StepShape[]): Record<string, number> 
     shpReqs: steps.length,
     shpPromptTok: steps.reduce((sum, s) => sum + s.prompt, 0),
     shpTools: tools,
+    shpCalls: calls,
     shpParallel: parallel,
     shpSerial: serial,
     shpSerialTok: serialTok,

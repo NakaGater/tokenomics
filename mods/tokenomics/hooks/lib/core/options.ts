@@ -13,6 +13,8 @@ export type CoreOptions = {
   delegation: 'off' | 'observe' | 'auto'
   /** B6: the main conversation's own search or whole test run is turned back once, with the light skill (scout, test-summary) named. */
   steer: 'off' | 'observe' | 'auto'
+  /** B7: one sentence in the system prompt asking for reads that do not depend on each other in the same response; half of the sessions, to be compared with the rest. */
+  batch: 'off' | 'observe' | 'auto'
   /** C1 to C3: one-line suggestions. `observe` only notes, in the ledger, when one would have been made; `suggest` makes it, after a reply. */
   nudges: 'off' | 'observe' | 'suggest'
   /** Before a conversation is lost (`/clear`, a compaction) a note is written of what it was doing, and the one that goes on is told where it is (one line). */
@@ -28,6 +30,7 @@ export const DEFAULT_OPTIONS: CoreOptions = {
   digest: 'auto',
   delegation: 'observe',
   steer: 'observe',
+  batch: 'auto',
   nudges: 'observe',
   handoffNote: true,
   holdoutPercent: 0,
@@ -48,6 +51,7 @@ export const parseOptions = (raw: PluginOptions | undefined): CoreOptions => {
     digest: pick(o.digest, ['off', 'observe', 'auto'], DEFAULT_OPTIONS.digest),
     delegation: pick(o.delegation, ['off', 'observe', 'auto'], DEFAULT_OPTIONS.delegation),
     steer: pick(o.steer, ['off', 'observe', 'auto'], DEFAULT_OPTIONS.steer),
+    batch: pick(o.batch, ['off', 'observe', 'auto'], DEFAULT_OPTIONS.batch),
     nudges: pick(o.nudges, ['off', 'observe', 'suggest'], DEFAULT_OPTIONS.nudges),
     handoffNote: typeof o.handoffNote === 'boolean' ? o.handoffNote : DEFAULT_OPTIONS.handoffNote,
     holdoutPercent: number(o.holdoutPercent, 0, 100, DEFAULT_OPTIONS.holdoutPercent),
