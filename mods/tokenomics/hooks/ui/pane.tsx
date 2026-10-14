@@ -175,7 +175,7 @@ export const Pane = (p: PaneProps) => {
           .filter(row => row.label !== '今回のリクエスト')
           .map(row => (
           <Box gap={2}>
-            <Box width={LABEL_CELLS}>
+            <Box width={LABEL_CELLS} flexShrink={0}>
               <Text dimColor>{row.label}</Text>
             </Box>
             <Text>{row.value}</Text>

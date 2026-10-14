@@ -3,7 +3,7 @@ import { type Engine, describe, expect, test } from 'claude-code/testing'
 import { MAX_FORKS, forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId, ownName } from '../hooks/lib/core/forks'
 import { parseLedger } from '../hooks/lib/core/ledger'
 
-import { type Calls, SURFACES, bandProps, engine, keptIn, paneProps, savedIn } from './kit'
+import { type Calls, SURFACES, bandProps, engine, paneProps, runStep, savedIn, savedLabelIn } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 
@@ -293,8 +293,9 @@ test('the pane tells the estimate in a row of its own, called an estimate', asyn
   const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: '今日の節約（推定）' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /調べものやテストを 1 回任せ.*約 20k tok（控えめな推定）/ })).toBeDefined()
-  // No cut was made, so there is no row for one, and nothing is added up.
+  // No cut was made, so there is no row for one, and with one kind alone there is no total row.
   expect(await pane.find({ type: 'Text', text: '今日の節約（確定）' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: '今日の節約（合計）' })).toBeUndefined()
 })
 
 test('the text report says it too', async ($, on) => {
@@ -307,16 +308,18 @@ test('the text report says it too', async ($, on) => {
   expect(ran.text).toContain('控えめな推定')
 })
 
-test('the band shows it beside its own label, never in the figure of the cuts', async ($, on) => {
+test('the band counts it in its one figure, and the label says an estimate is in it', async ($, on) => {
   const calls = engine(on)
   scoutForks(on)
   const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
-  for (const ui of bands) expect(await keptIn(ui)).toBeUndefined()
+  for (const ui of bands) expect(await savedIn(ui)).toBeUndefined()
   await handOver($, calls)
 
   for (const ui of bands) {
-    expect(await keptIn(ui)).toBe('約 20k tok')
-    expect(await savedIn(ui)).toBeUndefined()
+    expect(await savedIn(ui)).toBe('約 20k tok')
+    expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+    // No chip of its own any more: the pane tells it apart.
+    expect(await ui.find({ type: 'Text', text: '委任（推定）' })).toBeUndefined()
   }
 })
 
@@ -326,8 +329,81 @@ test('a person held back from the savings is not shown the estimate, though the 
   const band = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await handOver($, calls)
 
-  expect(await keptIn(band)).toBeUndefined()
+  expect(await savedIn(band)).toBeUndefined()
   const ran = await $.command.run(RUN as never)
   expect(ran.text).not.toContain('任せ')
   expect(sum(await ledgerOf($, calls), 'B1:keptTokens')).toBe(19_800)
+})
+
+// ── What a run kept out spares the requests that follow ───────────────────────────────────────────────────────
+
+const MESSAGES = [{ role: 'user', text: 'hello', toolUses: [] }] as never
+
+test('what a run kept out is spared every request that follows it, and the band counts the requests', async ($, on) => {
+  const calls = engine(on)
+  scoutForks(on)
+  const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
+  await handOver($, calls)
+  for (const ui of bands) expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+
+  await runStep($ as never)
+  await runStep($ as never)
+  for (const ui of bands) {
+    expect(await savedIn(ui)).toBe('約 40k tok')
+    expect(await savedLabelIn(ui)).toBe('節約（延べ・推定含む）')
+  }
+  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: '今日の節約（延べ）' })).toBeDefined()
+
+  const ledger = await ledgerOf($, calls)
+  expect(count(ledger, 'A1:signal:auto:flow')).toBe(2)
+  expect(sum(ledger, 'A1:flowKeptTokens')).toBe(2 * 19_800)
+  expect(sum(ledger, 'A1:flowTokens')).toBe(0)
+  // What it kept out once is as it was.
+  expect(sum(ledger, 'B1:keptTokens')).toBe(19_800)
+})
+
+test('a compaction stops it: a run settled afterwards kept nothing out of the new window', async ($, on) => {
+  const calls = engine(on)
+  scoutForks(on)
+  await $.session.start(START)
+  await mainEnds($, 'warm')
+  await read($, 'r1', '/repo/src/a.ts', 'f1')
+  await read($, 'r2', '/repo/src/b.ts', 'f1')
+  await subEnds($, 'f1', REPORT)
+  // The fork ended in the old window; the Skill call that names it returns after the compaction.
+  await $.session.compact({ trigger: 'manual', messages: MESSAGES } as never)
+  await skill($, 's1', 'tokenomics:scout')
+  await runStep($ as never)
+  await runStep($ as never)
+  const ledger = await ledgerOf($, calls)
+
+  expect(sum(ledger, 'B1:keptTokens')).toBe(19_800)
+  expect(count(ledger, 'A1:signal:auto:flow')).toBe(0)
+})
+
+test('/clear stops it, and the next run starts it again', async ($, on) => {
+  const calls = engine(on)
+  scoutForks(on)
+  await handOver($, calls)
+  await runStep($ as never)
+  await $.session.end({ reason: 'clear' } as never)
+  await runStep($ as never)
+  await runStep($ as never)
+  const ledger = await ledgerOf($, calls)
+
+  expect(count(ledger, 'A1:signal:auto:flow')).toBe(1)
+})
+
+test('a person held back from the savings is shown none of it, though the requests are counted for the comparison', { options: { holdoutPercent: 100 } }, async ($, on) => {
+  const calls = engine(on, { isPlaced: false })
+  scoutForks(on)
+  const band = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await handOver($, calls)
+  await runStep($ as never)
+
+  expect(await savedIn(band)).toBeUndefined()
+  const ran = await $.command.run(RUN as never)
+  expect(ran.text).not.toContain('延べ')
+  expect(sum(await ledgerOf($, calls), 'A1:flowKeptTokens')).toBe(19_800)
 })

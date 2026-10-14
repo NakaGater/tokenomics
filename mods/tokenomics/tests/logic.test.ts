@@ -330,7 +330,7 @@ describe('status', () => {
   test('every label of the status rows fits the label column of the pane, with room to spare', () => {
     const turn = turnTokens({ input_tokens: 2, output_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1_000, model: 'm' }, [1_102])
     const f = applyTurn({ ...at(40), agentRuns: 1, agentTokens: 5_000, costUsd: null, rateLimits: [{ kind: 'seven_day', percentUsed: 9 }] }, turn, 1, 0, 0)
-    const savings = { digests: 1, tokens: 1, milliUsd: 1, recovered: 0, forks: 1, keptTokens: 1, keptMilliUsd: 1, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, wouldFire: 1 }
+    const savings = { digests: 1, tokens: 1, milliUsd: 1, recovered: 0, forks: 1, keptTokens: 1, keptMilliUsd: 1, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 1, subTokens: 1, flowReqs: 1, flowTokens: 1, flowKeptTokens: 1, flowMicroUsd: 1, wouldFire: 1 }
     const widest = Math.max(...statusRows(f, savings).map(r => cellWidth(r.label)))
     expect(widest).toBeLessThanOrEqual(LABEL_CELLS - 2)
   })

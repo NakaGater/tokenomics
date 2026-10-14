@@ -18,18 +18,62 @@ const NONE = 'まだありません'
 const signedUsd = (milli: number): string => `約 ${milli < 0 ? '−' : ''}${formatUsd(Math.abs(milli) / 1000)}`
 
 /**
+ * Everything the savings layer kept out today, as the band says it in one figure: the digest's cuts (確定) and the reading handed to
+ * a skill or agent (推定), each added up over the requests it spared once it was out of the conversation (延べ), and the outputs cut
+ * inside subagents, as they were cut. Where no request has followed a kind yet (or the ledger is from before they were counted)
+ * its size as it was cut stands in. `label` says what is in it: 延べ where requests were counted, 推定 where an estimate is.
+ * It is a figure to show: the ledger and the pilot report keep the kinds apart.
+ */
+export const savedAll = (s: Savings): { tokens: number; digest: number; delegated: number; isSpread: boolean; isEstimated: boolean; label: string } => {
+  const digest = Math.max(s.tokens, s.flowTokens)
+  const delegated = Math.max(s.keptTokens, s.flowKeptTokens)
+  const isSpread = s.flowReqs > 0
+  const isEstimated = delegated > 0 || s.subTokens > 0
+  const said = [...(isSpread ? ['延べ'] : []), ...(isEstimated ? ['推定含む'] : [])]
+
+  return { tokens: digest + delegated + s.subTokens, digest, delegated, isSpread, isEstimated, label: said.length === 0 ? '節約' : `節約（${said.join('・')}）` }
+}
+
+/**
  * What the savings layer has done today, in rows; nothing when it has done nothing yet. Dollars only off a subscription.
- * The digest's figure is a cut that happened (確定); the other is an estimate of the reading that work handed to a skill or
- * agent kept out of the conversation, and a cautious one. They are two rows, never one total.
+ * The digest's figure is a cut that happened (確定); the next is an estimate of the reading that work handed to a skill or
+ * agent kept out of the conversation, and a cautious one; the last is what the cuts inside subagents spared them. Each has a row
+ * of its own, as it was cut. What was kept out spares every request that follows, so one more row counts that (延べ), in tokens and,
+ * measured on the requests that were made, in dollars; and a row on top adds the kinds up: the figure the band shows.
  */
 export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
   const rows: Row[] = []
+  const all = savedAll(s)
+  const parts: string[] = []
+  if (all.digest > 0) parts.push(`確定 ${formatTokens(all.digest)}`)
+  if (all.delegated > 0) parts.push(`推定 ${formatTokens(all.delegated)}`)
+  if (s.subTokens > 0) parts.push(`サブエージェント内 ${formatTokens(s.subTokens)}`)
+  if (parts.length > 1 || all.isSpread) {
+    rows.push({
+      label: '今日の節約（合計）',
+      value:
+        `約 ${formatTokens(all.tokens)} tok ＝ ${parts.join(' ＋ ')}（帯の「節約」と同じ数字` +
+        (all.isSpread ? '。確定と推定は延べ' : '') +
+        (all.isEstimated ? '。推定を含む' : '') +
+        '）',
+    })
+  }
+  if (all.isSpread) {
+    rows.push({
+      label: '今日の節約（延べ）',
+      value:
+        `会話に入れずに済ませた分が、のべ ${s.flowReqs} 回のリクエストに載らずに済みました（延べ約 ${formatTokens(s.flowTokens + s.flowKeptTokens)} tok` +
+        (isSubscription ? '' : `、入力側の見込み約 ${formatUsd(s.flowMicroUsd / 1_000_000)}`) +
+        '）。/clear や要約で数え直します。エンジンが先に古いツール結果を片付けたときは、多めに出ます',
+    })
+  }
   if (s.digests > 0) {
     rows.push({
       label: '今日の節約（確定）',
       value:
         `大きな出力を ${s.digests} 回縮め、約 ${formatTokens(s.tokens)} tok を会話に入れずに済みました` +
-        (isSubscription ? '' : `（見込み約 ${formatUsd(s.milliUsd / 1000)}）`) +
+        // The measured dollars are in the row above once requests were counted; the assumed ones would be a second amount for the same thing.
+        (isSubscription || all.isSpread ? '' : `（見込み約 ${formatUsd(s.milliUsd / 1000)}）`) +
         (s.recovered > 0 ? `。あとで全文を取りに戻ったのは ${s.recovered} 回` : ''),
     })
   }
@@ -44,6 +88,12 @@ export const savingsRows = (s: Savings, isSubscription: boolean): Row[] => {
           : `、見込み約 ${formatUsd(s.keptMilliUsd / 1000)}。任せた先の費用は約 ${formatUsd(s.forkCostMilliUsd / 1000)}（入力側）で、差し引き ${signedUsd(s.keptMilliUsd - s.forkCostMilliUsd)}`) +
         (s.forkLosses > 0 ? `。報告が読んだ量以上で、得にならなかったのは ${s.forkLosses} 回` : '') +
         (s.forkReaders > 0 ? `。ファイルを読んだ ${s.forkReaders} 回のあと、会話側が同じファイルを読み直したのは ${s.forkRereads} 件` : ''),
+    })
+  }
+  if (s.subCuts > 0) {
+    rows.push({
+      label: '今日の節約（サブ）',
+      value: `サブエージェントが読む大きな出力を ${s.subCuts} 回縮め、約 ${formatTokens(s.subTokens)} tok を読まずに済ませました（会話が読むものではない分。上の「確定」には入れていません）`,
     })
   }
   if (s.wouldFire > 0) {

@@ -1,6 +1,6 @@
 {
   "name": "tokenomics",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "description": "Shows how much of the context a session has used, says what to do about it at the moment it helps, and quietly keeps big outputs and lighter subagents from costing more than they should.",
   "author": { "name": "NakaGater" },
   "types": "./types/index.d.ts",

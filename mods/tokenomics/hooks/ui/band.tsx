@@ -26,15 +26,13 @@ export type BandProps = {
    */
   nudge: string | null
   /**
-   * Tokens the output digest kept out of the conversation today, over every session on this machine (the pane's
-   * "今日の節約"); the band says so only once it is more than none.
+   * Tokens the savings layer kept out today, over every session on this machine, all kinds added up in one figure: the output digest's
+   * cuts, the reading handed to the plugin's skills and agents (an estimate) and the outputs cut inside subagents. The pane says them
+   * apart ("今日の節約"); the band says the sum only once it is more than none. 0 for a person held back from the savings.
    */
   savedTokens: number
-  /**
-   * Tokens of reading that work handed to the plugin's skills and agents kept out of the conversation today: an estimate, said
-   * apart from `savedTokens` and never added to it. 0 for a person held back from the savings, and when nothing was handed over.
-   */
-  keptTokens: number
+  /** What the figure is called: "節約", with "延べ" where it is counted over the requests and "推定含む" where an estimate is part of it. */
+  savedLabel: string
   /** A suggestion put in a card here, because no pane fits the terminal; null otherwise. */
   offer: Offer | null
   /** The mod is compacting at the person's request. */
@@ -185,7 +183,7 @@ const TurnBlock = (p: { ui: Ui; turn: TurnTokens | null; columns?: number }) => 
 }
 
 /** The figures of a turn and of the account, beside the context: savings, dollars and limits only once they matter. */
-const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
+const figures = (ui: Ui, f: Facts, savedTokens: number, savedLabel: string) => {
   const { Box, Text } = ui
   const showCost = f.rateLimits.length === 0 && f.costUsd !== null && f.costUsd >= 1
   const limits = f.rateLimits.filter(r => r.percentUsed >= THRESHOLDS.limitNotice)
@@ -202,16 +200,8 @@ const figures = (ui: Ui, f: Facts, savedTokens: number, keptTokens: number) => {
   if (savedTokens > 0) {
     rows.push(
       <Box gap={1}>
-        <Text dimColor>節約</Text>
+        <Text dimColor>{savedLabel}</Text>
         <Text color="success">{`約 ${formatTokens(savedTokens)} tok`}</Text>
-      </Box>,
-    )
-  }
-  if (keptTokens > 0) {
-    rows.push(
-      <Box gap={1}>
-        <Text dimColor>委任（推定）</Text>
-        <Text color="success">{`約 ${formatTokens(keptTokens)} tok`}</Text>
       </Box>,
     )
   }
@@ -245,7 +235,7 @@ const Card = (p: PartProps & { Raster: RasterElement }) => {
   const tokens = fillTokens(fill)
   const level = contextLevel(scaledPercent(f))
   const gaugeColumns = gaugeColumnsFor(p.columns)
-  const others = figures(p.ui, f, p.savedTokens, p.keptTokens)
+  const others = figures(p.ui, f, p.savedTokens, p.savedLabel)
 
   return (
     <Box borderStyle="round" borderColor={levelColor(level) ?? 'claude'} paddingX={1} gap={2}>
@@ -312,7 +302,7 @@ const Plain = (p: PartProps & { mood: ReturnType<typeof moodOf> }) => {
           {tokens !== null && <Text>{tokens}</Text>}
         </Box>
         <TurnBlock ui={p.ui} turn={f.last} />
-        {figures(p.ui, f, p.savedTokens, p.keptTokens)}
+        {figures(p.ui, f, p.savedTokens, p.savedLabel)}
         {p.tag !== null && <Text dimColor>{p.tag}</Text>}
         <Button key="analysis" label="詳しく分析" onPress={p.onAnalysis} />
         <Button key="settings" label="設定" onPress={p.onSettings} />

@@ -194,6 +194,14 @@ export const savingsToday = (ledger: Ledger, now: number): Savings => ({
   forkRereads: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'outcome', 'reread_')),
   forkCostMilliUsd: sumOf(ledger, now, 1, 'B1:scoutMicroUsd') / 1000,
   forkLosses: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'outcome', 'lost_')),
+  // Cuts made in a subagent's loop: said apart from the digest's, since the conversation would never have read them.
+  subCuts: sumCounts(ledger, now, 1, k => partsOf(k).measure === 'A1' && partsOf(k).kind === 'signal' && partsOf(k).tag === 'sub_cut'),
+  subTokens: sumOf(ledger, now, 1, 'A1:subSavedTokens'),
+  // What the kept-out tokens spared the requests that followed them (lib/core/flow): one event per request that carried less.
+  flowReqs: sumCounts(ledger, now, 1, k => k === 'A1:signal:auto:flow'),
+  flowTokens: sumOf(ledger, now, 1, 'A1:flowTokens'),
+  flowKeptTokens: sumOf(ledger, now, 1, 'A1:flowKeptTokens'),
+  flowMicroUsd: sumOf(ledger, now, 1, 'A1:flowMicroUsd'),
 })
 
 /** How a kind of suggestion has fared over the last two weeks: made, followed within a few turns, and left unanswered. */

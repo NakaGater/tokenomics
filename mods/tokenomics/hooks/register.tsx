@@ -43,6 +43,7 @@ import { DEMO_MS, type CatState, type Demo, JUMP_STEPS, catView } from './lib/pa
 import { DIGEST, digestOutput, digestPath, isDigestFile, isInsideDir, isNoteFile, normalizeCommand } from './lib/core/digest'
 import { decideSpawn, typeTag } from './lib/core/downgrade'
 import { ASSUMED_TURNS_AFTER, coldTurnUsd, heavyLevel, keptOutUsd, milliUsd, modelFamily, usageInputUsd, warmTurnUsd } from './lib/core/economics'
+import { type KeptItem, requestFlow } from './lib/core/flow'
 import { forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId } from './lib/core/forks'
 import { shortHash } from './lib/core/hash'
 import { type Kind, type RawEvent, appendRaw, emptyLedger, digestThreshold, exportLedger, parseLedger, retiredNudges, savingsToday, sessionKey } from './lib/core/ledger'
@@ -50,14 +51,14 @@ import { ANSWER_TURNS, clearStakeUsd, coldReturn, risen, topicShift } from './li
 import { type Candidate, DEMO_LINE, DEMO_SHORT, chooseNudge, nudgeLine, nudgeShort } from './lib/core/nudges'
 import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
 import { type MeasureId, armOf, failed, isTripped, modeOf, succeeded } from './lib/core/policy'
-import { freshState, resetConversation, resetSession, touch } from './lib/core/state'
+import { freshState, newWindow, resetConversation, resetSession, touch } from './lib/core/state'
 import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, steerTurn } from './lib/core/steer'
 import { BATCH_SECTION, batchGroupOf } from './lib/core/batch'
 import { readPathOf, requestShape, type StepShape } from './lib/core/shape'
 import { advisorMs, advisorRead, noteOpenedBy, noteWritten, subagentSpend } from './lib/core/spend'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
-import { report, settingsReport } from './lib/status'
+import { report, savedAll, settingsReport } from './lib/status'
 import { commandArg, commandOf, startsAt, windowView } from './lib/window'
 import { WORKER, WORKER_DESCRIPTION, WORKER_PROMPT, WORKER_TOOLS } from './lib/worker'
 import { Band } from './ui/band'
@@ -627,6 +628,7 @@ const compact = async ($: Dollar): Promise<void> => {
       $.ui.toast(say('heavy', 'いまは要約できませんでした。'))
     } else {
       await change($, f => applyCompacted(f, done.tokensAfter))
+      newWindow(sv)
       await clearNudge($)
       const sizes =
         done.tokensBefore !== undefined && done.tokensAfter !== undefined
@@ -1039,11 +1041,11 @@ const PERSON_KEY = 'personId'
 const FLUSH_MS = 3_000
 const FLUSH_AT = 20
 
-const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 }
+const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 }
 const savings = atom({ plugin: 'tokenomics', key: 'savings' } as const, emptySavings)
-/** Tokens the output digest has kept out of the conversation today, as the band says them (see `svShow`). */
+/** Everything the savings layer has kept out today, added up as the band says it (see `svShow`), and the name it goes by. */
 let savedToday = 0
-let keptToday = 0
+let savedLabel = '節約'
 
 const sv = freshState(parseOptions(undefined))
 let svReady: Promise<void> | null = null
@@ -1060,7 +1062,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.9'
+const MOD_VERSION = '0.6.10'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1090,16 +1092,18 @@ const svEnsure = ($: Dollar): Promise<void> => (svReady ??= svInit($))
 const svShow = async ($: Dollar): Promise<void> => {
   const today = savingsToday(sv.ledger, await $.clock.now())
   // A person held back from the savings (to be compared with the rest) is not shown an estimate of them either.
-  const next: Savings = sv.arm === 'control' ? { ...today, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 } : today
+  const next: Savings = sv.arm === 'control' ? { ...today, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 } : today
   const now = await read($, savings)
   if ((Object.keys(next) as (keyof Savings)[]).some(k => now[k] !== next[k])) {
     await update($, savings, () => next)
   }
-  // The band says the saved tokens too, and only they redraw it: the pane's other figures change more often, and
-  // nothing else redraws the band when the ledger is written. Kept apart from the atom for that reason.
-  if (next.tokens !== savedToday || next.keptTokens !== keptToday) {
-    savedToday = next.tokens
-    keptToday = next.keptTokens
+  // The band says the saved tokens too, all kinds added up in one figure, and only it redraws the band: the pane's other figures
+  // change more often, and nothing else redraws the band when the ledger is written. Kept apart from the atom for that reason.
+  // Added up from `next`, so a person held back from the savings is shown none of it.
+  const all = savedAll(next)
+  if (all.tokens !== savedToday || all.label !== savedLabel) {
+    savedToday = all.tokens
+    savedLabel = all.label
     $.ui.invalidate('ui.render')
   }
 }
@@ -1282,6 +1286,29 @@ const svPrompted = ($: Dollar, text: string): Promise<void> =>
     undefined,
   )
 
+/** What came out of the conversation is remembered, to be counted at every request that follows (`svFlow`). */
+const keepOut = (id: string, item: KeptItem): void => {
+  if (item.tokens <= 0) return
+  sv.kept.set(id, item)
+  sv.keptFresh += item.tokens
+}
+
+/**
+ * One request of the main loop was answered: what the items kept out of the conversation spared it is written down, and the band
+ * and the pane follow at once. `items` and `fresh` are what stood when the request began (a call that came out during it was
+ * not in its prompt, and would not have been in the conversation's).
+ */
+const svFlow = async ($: Dollar, items: readonly KeptItem[], fresh: number, model: string): Promise<void> => {
+  if (items.length === 0) return
+  try {
+    const flow = requestFlow(items, fresh, model)
+    await svRecord($, 'A1', 'auto', 'signal', 'flow', { flowTokens: flow.digestTokens, flowKeptTokens: flow.delegationTokens, flowMicroUsd: flow.microUsd }, true)
+    await svShow($)
+  } catch {
+    // Only a figure to look at.
+  }
+}
+
 /**
  * A subagent's run, once it has ended and its kind is known: what it spent, whether it read files, and, for a skill or agent of
  * this plugin, what it kept out of the conversation. A kind is known when the subagent was spawned as one, or, for a skill's
@@ -1317,6 +1344,8 @@ const svSettle = async ($: Dollar, id: string): Promise<void> => {
     true,
   )
   if (kept.isLoss) await svRecord($, 'B1', m, 'outcome', `lost_${type ?? kept.name}`, undefined, true)
+  // Kept out of the window it ended in; a run settled after a /clear or a compaction kept nothing out of the new one.
+  if (run.ended.epoch === sv.epoch) keepOut(`k:${id}`, { tokens: kept.keptTokens, kind: 'delegation' })
 }
 
 /** Every run that ended and was never named is settled as it is. */
@@ -1368,7 +1397,7 @@ const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | u
           const used = subagentSpend(usage)
           await svRecord($, 'S', 'observe', 'signal', used.tag, used.n, true)
         }
-        sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex, microUsd }))
+        sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex, microUsd, epoch: sv.epoch }))
         // Named already (spawned as a kind): settled now. A skill's fork is named when the Skill call returns, which is after this.
         if (sv.spawns.has(agentId)) await svAttempt($, 'B1', () => svSettle($, agentId), undefined)
         return
@@ -1673,6 +1702,8 @@ const svWatchCall = async ($: Dollar, tool: string, input: Record<string, unknow
       for (const [id, d] of sv.digests) {
         if (d.command === command && sv.turnIndex - d.turn <= 2) {
           sv.digests.delete(id)
+          // The output is in the conversation again, so it spares the requests that follow nothing more.
+          sv.kept.delete(`d:${id}`)
           await svRecord($, 'A1', m, 'outcome', 'rerun')
         }
       }
@@ -1681,6 +1712,7 @@ const svWatchCall = async ($: Dollar, tool: string, input: Record<string, unknow
     if (tool === 'Read' && typeof input.file_path === 'string' && sv.saveDir !== '' && isInsideDir(sv.saveDir, input.file_path)) {
       if (isDigestFile(input.file_path) && !sv.readBack.has(input.file_path)) {
         sv.readBack.add(input.file_path)
+        for (const id of sv.kept.keys()) if (id.startsWith('d:') && digestPath(sv.saveDir, id.slice(2)) === input.file_path) sv.kept.delete(id)
         await svRecord($, 'A1', m, 'outcome', 'readback')
       }
     }
@@ -1766,6 +1798,8 @@ const svDigestBash = async (
   await $.fs.write(path, out)
   sv.digests.set(toolUseId, { command: shortHash(normalizeCommand(command)), turn: sv.turnIndex })
   await svRecord($, 'A1', 'auto', 'fired', undefined, n)
+  // Out of the conversation from here on: every request that follows is spared it, until a /clear or a compaction.
+  keepOut(`d:${toolUseId}`, { tokens: savedTokens, kind: 'digest' })
   return { ...ran, result: { ...result, stdout: cut.text }, text: cut.text } as typeof ran
 }
 
@@ -2005,6 +2039,8 @@ export const register: Register = (on, options) => {
     // A `precompute` installs nothing: the window has not shrunk. Only a compaction the person typed counts as their answer.
     if (e.agentId === undefined && done.skip === undefined && e.trigger !== 'precompute') {
       await change($, f => applyCompacted(f, done.tokensAfter))
+      // What was kept out of the old window spares the requests of the summary nothing more.
+      newWindow(sv)
       await clearNudge($)
       jumpCat($)
       if (e.trigger === 'manual') await svAttempt($, 'C2', () => svAnswered($), undefined)
@@ -2042,12 +2078,19 @@ export const register: Register = (on, options) => {
     // after every call of this one has ended, so the last shape is always the request whose calls these are).
     const shape: StepShape | null = e.agentId === undefined ? { prompt: 0, asked: 0, readOnly: 0, refused: 0, readPath: null } : null
     if (shape !== null) stepShapes.push(shape)
+    // What has been kept out of the conversation so far is what this request is spared; the calls it makes are for the next.
+    const spared = e.agentId === undefined ? [...sv.kept.values()] : []
+    const sparedFresh = sv.keptFresh
+    const sparedIn = sv.epoch
+    if (e.agentId === undefined) sv.keptFresh = 0
     let step: TurnStepResult | undefined
     try {
       step = yield* next(effort === undefined ? e : { ...e, effort })
     } finally {
       // A request that was never answered is no request.
       if (shape !== null && step?.usage == null) stepShapes = stepShapes.filter(s => s !== shape)
+      // ...and so it wrote nothing to the cache: what was new for it is new for the next.
+      if (e.agentId === undefined && step?.usage == null && sparedIn === sv.epoch) sv.keptFresh += sparedFresh
     }
     // One request answered: the main loop's turn counts it, with the size of the prompt it sent.
     if (e.agentId === undefined && step?.usage != null) {
@@ -2066,6 +2109,7 @@ export const register: Register = (on, options) => {
       // The band and the pane follow the turn as it goes, not only when it ends (the engine measures once a turn).
       const requests = requestsThisTurn
       await change($, f => applyRequest(f, requests, e.model))
+      if (sparedIn === sv.epoch) await svFlow($, spared, sparedFresh, e.model)
     }
     await svStepped($, e.agentId, step)
 
@@ -2273,7 +2317,7 @@ export const register: Register = (on, options) => {
       advice: nextAdvice(f, [...(await read($, dismissed)), ...(modeFor('C3') === 'suggest' ? ['cache-lapse'] : [])]),
       nudge: await read($, nudge),
       savedTokens: savedToday,
-      keptTokens: keptToday,
+      savedLabel,
       offer: card,
       tag: tagOf(await read($, modes)),
       isCompacting: (await read($, busy)) === 'compact',

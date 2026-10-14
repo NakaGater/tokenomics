@@ -3,7 +3,7 @@ import { type Engine, expect, test } from 'claude-code/testing'
 import { DEMO_LINE, DEMO_SHORT } from '../hooks/lib/core/nudges'
 import { type Ledger, append, emptyLedger, parseLedger, retiredNudges, savingsToday } from '../hooks/lib/core/ledger'
 
-import { type Calls, SURFACES, bandProps, engine, measure, nudgeIn, paneProps, phraseIn, runStep, savedIn } from './kit'
+import { type Calls, SURFACES, bandProps, engine, measure, nudgeIn, paneProps, phraseIn, runStep, savedIn, savedLabelIn } from './kit'
 
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 const TMP = '/tmp/T'
@@ -564,6 +564,50 @@ test('the band says what the digest has kept out of the conversation today, on t
   for (const ui of bands) expect(await savedIn(ui)).toBe(`約 ${Math.round(saved / 1000)}k tok`)
 })
 
+test('the band adds up every kind of saving in one figure, and the pane tells them apart', AUTO, async ($, on) => {
+  const calls = engine(on, { tmp: TMP })
+  on('tool.call', () => bash(log()))
+  await $.session.start(START)
+
+  const bands = await Promise.all(SURFACES.map(surface => $.ui.mount({ ...bandProps(), surface })))
+  await callBash($, 'a')
+  await calls.clock.advance(4_000)
+  // The conversation's own cut alone: confirmed, and so the label says nothing of an estimate.
+  for (const ui of bands) expect(await savedLabelIn(ui)).toBe('節約')
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'sub_1', command: 'bun test', agentId: 'ag1' } as never)
+  await calls.clock.advance(4_000)
+
+  const ledger = parseLedger(calls.store.get('ledger:v1'))
+  const confirmed = sum(ledger, 'A1:savedTokens')
+  const inSubagent = sum(ledger, 'A1:subSavedTokens')
+  expect(confirmed).toBeGreaterThan(10_000)
+  expect(inSubagent).toBeGreaterThan(10_000)
+  for (const ui of bands) {
+    expect(await savedIn(ui)).toBe(`約 ${Math.round((confirmed + inSubagent) / 1000)}k tok`)
+    expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+  }
+
+  const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: '今日の節約（合計）' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '今日の節約（確定）' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '今日の節約（サブ）' })).toBeDefined()
+})
+
+test('a subagent’s cut alone is in the band’s figure, with the estimate named in the label', AUTO, async ($, on) => {
+  const calls = engine(on, { tmp: TMP })
+  on('tool.call', () => bash(log()))
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'sub_1', command: 'bun test', agentId: 'ag1' } as never)
+  await calls.clock.advance(4_000)
+
+  const inSubagent = sum(parseLedger(calls.store.get('ledger:v1')), 'A1:subSavedTokens')
+  expect(await savedIn(ui)).toBe(`約 ${Math.round(inSubagent / 1000)}k tok`)
+  expect(await savedLabelIn(ui)).toBe('節約（推定含む）')
+})
+
 for (const digest of ['observe', 'off'] as const) {
   test(`the band keeps quiet about savings where nothing was cut: the digest set to ${digest}`, { options: { digest } }, async ($, on) => {
     const calls = engine(on, { tmp: TMP })
@@ -1076,7 +1120,7 @@ test('what was not cut is not counted as spared: observe keeps its figures apart
   expect(count(ledger, 'A1:would:observe')).toBe(1)
   expect(sum(ledger, 'A1:savedTokens')).toBe(0)
   expect(sum(ledger, 'A1:wouldTokens')).toBeGreaterThan(10_000)
-  expect(savingsToday(ledger, ledger.recent[0]!.t)).toEqual({ digests: 0, tokens: 0, milliUsd: 0, wouldFire: 1, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 })
+  expect(savingsToday(ledger, ledger.recent[0]!.t)).toEqual({ digests: 0, tokens: 0, milliUsd: 0, wouldFire: 1, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 })
 })
 
 test('a suggestion replaced by the next at the shortest gap, with nothing done in between, is counted as passed over', SUGGEST, async ($, on) => {
