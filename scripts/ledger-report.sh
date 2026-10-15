@@ -31,6 +31,9 @@ jq -s -r '
       | an("^S:signal:observe:turn$") as $turns
       | "  \($f[0].arm // "?")（\($people) 人）: ターン \($turns) ・ 1 ターンのプロンプト平均 \(if $turns == 0 then "-" else tok((($as["S:prompt"] // 0) / $turns) | round) end) tok ・ 冷えた戻り 100 ターンあたり \(per(an("^S:signal:observe:cold_") * 100; $turns)) 回 ・ 1 人あたり: 縮めた \(per(an("^A1:fired:"); $people)) 回・任せた \(per(an("^B1:signal:[a-z]+:kept_"); $people)) 回・会話に入れずに済んだ推定 約 \(tok((($as["B1:keptTokens"] // 0) / $people) | round)) tok";
     def nudge($m): "  \($m)  提案 \(n("\($m):shown:")) 回 ・ 実行された \(n("\($m):accepted:suggest")) 回（採用率 \(pct(n("\($m):accepted:suggest"); n("\($m):shown:")))）・ 見過ごされた \(n("\($m):dismissed:suggest:ignored")) 回 ・ 出すはずだった（記録のみ）\(n("\($m):would:observe")) 回、うち本人が自分で実行 \(n("\($m):accepted:observe")) 回";
+    def batchLine($g; $label):
+      n("B7:signal:auto:turns_\($g)") as $t
+      | "  \($label): ターン \($t) ・ 1 ターンのリクエスト \(per(sm("B7:reqs_\($g)"); $t)) 回 ・ 呼び出し \(per(sm("B7:calls_\($g)"); $t)) 回 ・ 読み取りが続いたもの \(per(sm("B7:serial_\($g)"); $t)) 回（リクエスト全体の \(pct(sm("B7:serial_\($g)"); sm("B7:reqs_\($g)")))）・ まとめて頼んだもの \(per(sm("B7:parallel_\($g)"); $t)) 回 ・ 1 ターンのプロンプト合計 \(if $t == 0 then "-" else tok((sm("B7:prompt_\($g)") / $t) | round) end) tok";
   [
     "tokenomics 記録の集計",
     "参加者: \(map(.participant) | unique | length) 人 ／ 提案の設定: \(map(.options.nudges // "?") | group_by(.) | map("\(.[0]) \(length)") | join("・")) ／ アーム: \(map(.arm // "?") | group_by(.) | map("\(.[0]) \(length)") | join("・"))",
@@ -60,6 +63,21 @@ jq -s -r '
     "  止めたあとに使われた \(nre("^B6:outcome:auto:adopted_")) 回（止めた回数に対して \(pct(nre("^B6:outcome:auto:adopted_"); n("B6:fired:")))）・ 同じ呼び出しを押し通された \(nre("^B6:outcome:auto:insisted_")) 回",
     "  種類別（止めた → 使われた ・ 押し通された）: 検索 \(n("B6:fired:auto:search")) → \(n("B6:outcome:auto:adopted_search")) ・ \(n("B6:outcome:auto:insisted_search")) ／ テスト \(n("B6:fired:auto:test")) → \(n("B6:outcome:auto:adopted_test")) ・ \(n("B6:outcome:auto:insisted_test")) ／ ログ（0.6.2 から）\(n("B6:fired:auto:log")) → \(n("B6:outcome:auto:adopted_log")) ・ \(n("B6:outcome:auto:insisted_log"))",
     "  記録のみの間（止めてはいない）に、止めるはずだった直後に使われた \(nre("^B6:outcome:(observe|suggest):adopted_")) 回（止めるはずだった回数に対して \(pct(nre("^B6:outcome:(observe|suggest):adopted_"); n("B6:would:")))）。これは自然に使われた分で、止めた効果ではありません",
+    "",
+    "【リクエストの形（推定の上限。記録は 0.6.7 から）】",
+    "  記録のあるターン \(n("S:signal:observe:request_shape")) ・ メインの会話のリクエスト \(sm("S:shpReqs")) 回（1 ターン平均 \(per(sm("S:shpReqs"); n("S:signal:observe:request_shape"))) 回）・ うちツールを頼んだもの \(sm("S:shpTools")) 回（頼んだ呼び出しは全部で \(sm("S:shpCalls")) 回。0.6.8 から）",
+    "  読み取りを 1 回でまとめて頼んだリクエスト（モデルがもうまとめている分）\(sm("S:shpParallel")) 回",
+    "  読み取り 1 つだけのリクエストの直後が、また読み取りだったもの 最大 \(sm("S:shpSerial")) 回（リクエスト全体の \(pct(sm("S:shpSerial"); sm("S:shpReqs")))）・ その直後のリクエストが会話を読み直した量 最大 約 \(tok(sm("S:shpSerialTok"))) tok（全リクエストが読んだ量の \(pct(sm("S:shpSerialTok"); sm("S:shpPromptTok")))）・ うち同じファイルを続けて読んだもの \(sm("S:shpSameFile")) 回",
+    "  B6 が止めたリクエスト \(sm("S:shpRefused")) 回 ・ その次のリクエストが読んだ量 約 \(tok(sm("S:shpRefusedTok"))) tok（全リクエストが読んだ量の \(pct(sm("S:shpRefusedTok"); sm("S:shpPromptTok")))）",
+    "  読み方: 上限であって、減らせた量ではありません。プラグインには、2 つ目の読み取りが 1 つ目の結果に頼っていたか（読んだ中身で次に読むファイルを決める、など）が見えません。頼っていたものは、まとめて頼めません。読み取りかどうかはエンジンの読み取り専用の判定によります。量はトークン数で、料金の割合ではありません（キャッシュの読み込みは書き込みよりずっと安い）。サブエージェントの分は入りません。ファイル名・コマンドは記録していません。",
+    "  B6 が止めるたびに、モデルが止めた旨を読んでもう一度応答するので、リクエストがおよそ 1 つ増えます（目安）。その増えた読み込みの大きさが、上の B6 の行です。止めて得た分と見比べてください。",
+    "",
+    "【読み取りをまとめて頼む一文（B7・記録は 0.6.8 から）】",
+    "  セッション: 一文を足した \(n("B7:fired:auto:session_on")) ・ 足さなかった（比べる側）\(n("B7:signal:auto:session_off")) ・ 足していない設定／何もしない人の分（足すはずだった記録のみ）\(n("B7:would:")) （分け方: セッション ID のハッシュで半々）",
+    batchLine("on"; "足した側"),
+    batchLine("off"; "足さない側"),
+    "  読み方: 同じ人たちの、足した側と足さない側のセッションの比べです（人数・セッション数が少ないうちは目安）。良くなった目印は、リクエストと読み取りが続いたものが減り、呼び出しとプロンプト合計が増えていないことです。呼び出しが増えていたら、読みすぎです。どれだけ差があれば効いたとするかは、まだ決めていません。",
+    "  一文は、半分のセッションのシステムプロンプトの末尾に足した 1 節です（モデルが読むだけで、道具も拒否も増えません。1 リクエストあたり約 70 tok、キャッシュ読み）。",
     "",
     "【自動要約のタイミング（記録は 0.6.1 から。ペインのスライダー、提案の「300k にする」）】",
     "  設定された: ペインから \(nre("^S:signal:[a-z]+:window_pane_")) 回 ・ 提案から \(nre("^S:signal:[a-z]+:window_offer_")) 回 ・ 入力欄に入れた（自動で設定できず、本人の Enter 待ち）\(nre("^S:signal:[a-z]+:window_typed_")) 回 ・ 設定した人 \(map(select([.days[]? | (.counts // {}) | keys[] | select(test("^S:signal:[a-z]+:window_(pane|offer)_"))] | length > 0)) | length) 人 / \(length) 人",

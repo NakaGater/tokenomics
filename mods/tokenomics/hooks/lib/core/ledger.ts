@@ -7,8 +7,9 @@ import type { Arm } from './policy'
 
 /**
  * The ledger: what each measure did and what came of it, kept as counts and sums by day, plus the last few events.
- * It holds no content of the person's: no prompt, no file name, no path, no command. Every word in it is one of a
- * short list the code chooses (`sanitize` refuses anything else), and every other value is a number.
+ * It holds no content of the person's: no prompt, no file name, no path, no command. Every word in it is a short token of
+ * letters, digits and `_ . : -` (`sanitize` refuses anything else, so a path or a sentence cannot get in), and every other
+ * value is a number.
  */
 export type Kind = 'fired' | 'would' | 'shown' | 'accepted' | 'dismissed' | 'outcome' | 'signal' | 'error' | 'feedback'
 
@@ -180,20 +181,29 @@ const isOwnFork = (key: string, measure: string, kind: string, prefix: string): 
   return p.measure === measure && p.kind === kind && p.tag.startsWith(prefix) && ownName(p.tag.slice(prefix.length)) !== null
 }
 
-export const savingsToday = (ledger: Ledger, now: number): Savings => ({
-  digests: sumCounts(ledger, now, 1, k => k.startsWith('A1:fired:')),
-  tokens: sumOf(ledger, now, 1, 'A1:savedTokens'),
-  milliUsd: sumOf(ledger, now, 1, 'A1:savedMilliUsd'),
-  wouldFire: sumCounts(ledger, now, 1, k => k.split(':')[1] === 'would'),
-  recovered: sumCounts(ledger, now, 1, k => k.startsWith('A1:outcome:') && (k.endsWith(':rerun') || k.endsWith(':readback'))),
+/** What the savings layer has kept out over the last `days` days of `ledger` (today, by default). */
+export const savingsToday = (ledger: Ledger, now: number, days = 1): Savings => ({
+  digests: sumCounts(ledger, now, days, k => k.startsWith('A1:fired:')),
+  tokens: sumOf(ledger, now, days, 'A1:savedTokens'),
+  milliUsd: sumOf(ledger, now, days, 'A1:savedMilliUsd'),
+  wouldFire: sumCounts(ledger, now, days, k => k.split(':')[1] === 'would'),
+  recovered: sumCounts(ledger, now, days, k => k.startsWith('A1:outcome:') && (k.endsWith(':rerun') || k.endsWith(':readback'))),
   // Never added to the digest's figures: those are cuts that happened, these are reads the conversation was spared by estimate.
-  forks: sumCounts(ledger, now, 1, k => partsOf(k).measure === 'B1' && partsOf(k).kind === 'signal' && partsOf(k).tag.startsWith('kept_')),
-  keptTokens: sumOf(ledger, now, 1, 'B1:keptTokens'),
-  keptMilliUsd: sumOf(ledger, now, 1, 'B1:keptMilliUsd'),
-  forkReaders: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'signal', 'readers_')),
-  forkRereads: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'outcome', 'reread_')),
-  forkCostMilliUsd: sumOf(ledger, now, 1, 'B1:scoutMicroUsd') / 1000,
-  forkLosses: sumCounts(ledger, now, 1, k => isOwnFork(k, 'B1', 'outcome', 'lost_')),
+  forks: sumCounts(ledger, now, days, k => partsOf(k).measure === 'B1' && partsOf(k).kind === 'signal' && partsOf(k).tag.startsWith('kept_')),
+  keptTokens: sumOf(ledger, now, days, 'B1:keptTokens'),
+  keptMilliUsd: sumOf(ledger, now, days, 'B1:keptMilliUsd'),
+  forkReaders: sumCounts(ledger, now, days, k => isOwnFork(k, 'B1', 'signal', 'readers_')),
+  forkRereads: sumCounts(ledger, now, days, k => isOwnFork(k, 'B1', 'outcome', 'reread_')),
+  forkCostMilliUsd: sumOf(ledger, now, days, 'B1:scoutMicroUsd') / 1000,
+  forkLosses: sumCounts(ledger, now, days, k => isOwnFork(k, 'B1', 'outcome', 'lost_')),
+  // Cuts made in a subagent's loop: said apart from the digest's, since the conversation would never have read them.
+  subCuts: sumCounts(ledger, now, days, k => partsOf(k).measure === 'A1' && partsOf(k).kind === 'signal' && partsOf(k).tag === 'sub_cut'),
+  subTokens: sumOf(ledger, now, days, 'A1:subSavedTokens'),
+  // What the kept-out tokens spared the requests that followed them (lib/core/flow): one event per request that carried less.
+  flowReqs: sumCounts(ledger, now, days, k => k === 'A1:signal:auto:flow'),
+  flowTokens: sumOf(ledger, now, days, 'A1:flowTokens'),
+  flowKeptTokens: sumOf(ledger, now, days, 'A1:flowKeptTokens'),
+  flowMicroUsd: sumOf(ledger, now, days, 'A1:flowMicroUsd'),
 })
 
 /** How a kind of suggestion has fared over the last two weeks: made, followed within a few turns, and left unanswered. */

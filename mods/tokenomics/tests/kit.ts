@@ -135,6 +135,10 @@ type EngineOptions = {
    */
   autocompactCommand?: 'works' | 'ignored' | 'rejects'
   /** What the API reports for each model step the kit answers (read when the step is answered, so a test may change it between steps). */
+  /** The tool calls each step asks for (a test may change it between steps). */
+  stepToolUses?: readonly { name: string; input: unknown }[]
+  /** Run inside each step the kit answers, before its result returns: the calls the engine starts while the response is still coming in. */
+  duringStep?: () => Promise<void>
   stepUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model: string }
   /** The tool calls the API ran itself inside each model step the kit answers (the advisor), as the step's result lists them. */
   serverToolUses?: { id: string; name: string; input: unknown; startedAt: number; endedAt?: number }[]
@@ -400,14 +404,17 @@ export const engine = (on: On, options: EngineOptions = {}): Calls => {
     return { value: { agent: `tokenomics:${e.name}` } }
   })
   on('agent.offer', () => ({ isOffered: true }))
+  // What the engine composes before any plugin adds to it: one section of its own.
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are a coding assistant.', scope: 'shared' as const }] }))
 
   on('turn.step', async function* (_$, e) {
     calls.steps.push({ model: e.model, effort: e.effort, agentId: e.agentId })
+    await options.duringStep?.()
     return {
       turnId: e.turnId,
       index: e.index,
       answer: '',
-      toolUses: [],
+      toolUses: options.stepToolUses ?? [],
       ...(options.serverToolUses === undefined ? {} : { serverToolUses: options.serverToolUses }),
       stopReason: 'end_turn' as const,
       usage: options.stepUsage ?? { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model },
@@ -501,18 +508,22 @@ export const nudgeIn = async (ui: TextFinder): Promise<string | undefined> =>
 
 /** What the cat's phrase says in the card: the dim Text that is not the label of a figure or a limit. */
 export const phraseIn = async (ui: TextFinder): Promise<string | undefined> =>
-  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|今回（1ターンの合計）|リクエスト|出力|└ キャッシュ読み|キャッシュ書き込み|キャッシュなし|エージェント|節約|委任（推定）|累計|.*の上限)$/.test(t.text ?? ''))?.text
+  (await ui.findAll({ type: 'Text' })).find(t => t.props.dimColor === true && !/^(?:コンテキスト|今回|現在のターンの合計|セッション|現在のセッションの合計|リクエスト|ターン|出力|└ キャッシュ読み|キャッシュ書き込み|キャッシュなし|エージェント|節約(?:（[^）]*）)?|累計|.*の上限)$/.test(t.text ?? ''))?.text
 
-/** What the band says the digest has saved today: the figure beside the dim label "節約", or undefined where it says nothing. */
+/** What the session's row says the savings layer has kept out, all kinds added up: the green figure beside the dim label "節約（延べ）"; undefined while it is none (the row says "0 tok" then, not in green). */
 export const savedIn = async (ui: TextFinder): Promise<string | undefined> => {
   const texts = await ui.findAll({ type: 'Text' })
-  const label = texts.find(t => t.text === '節約' && t.props.dimColor === true)
+  const label = texts.find(t => /^節約(?:（[^）]*）)?$/.test(t.text ?? '') && t.props.dimColor === true)
   return label === undefined ? undefined : texts.find(t => t.props.color === 'success')?.text
 }
 
-/** What the band says work handed to the plugin's skills and agents kept out today: the figure after the dim label "委任（推定）", or undefined. */
-export const keptIn = async (ui: TextFinder): Promise<string | undefined> => {
+/** The figure standing right after the label "節約（延べ）", green or not: "0 tok" while nothing is kept out. */
+export const savedValueIn = async (ui: TextFinder): Promise<string | undefined> => {
   const texts = await ui.findAll({ type: 'Text' })
-  const at = texts.findIndex(t => t.text === '委任（推定）' && t.props.dimColor === true)
-  return at < 0 ? undefined : texts.slice(at + 1).find(t => t.props.color === 'success')?.text
+  const at = texts.findIndex(t => t.text === '節約（延べ）')
+  return at < 0 ? undefined : texts[at + 1]?.text
 }
+
+/** The dim label of that figure: "節約（延べ）", which the session's row always has. */
+export const savedLabelIn = async (ui: TextFinder): Promise<string | undefined> =>
+  (await ui.findAll({ type: 'Text' })).find(t => /^節約(?:（[^）]*）)?$/.test(t.text ?? '') && t.props.dimColor === true)?.text

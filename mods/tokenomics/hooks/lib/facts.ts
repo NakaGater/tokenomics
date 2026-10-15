@@ -27,6 +27,9 @@ const withTurn = (s: SessionTotals, t: TurnTokens): SessionTotals => {
   }
 }
 
+/** The session's totals with the turn under way added: while a turn runs it is part of the session, as the band says it. */
+export const liveSessionOf = (f: Facts): SessionTotals => (f.isLastRunning === true && f.last !== null ? withTurn(sessionOf(f), f.last) : sessionOf(f))
+
 export const initialFacts: Facts = {
   contextPercent: null,
   contextTokens: null,

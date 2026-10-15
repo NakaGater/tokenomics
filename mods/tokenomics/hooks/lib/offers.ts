@@ -29,7 +29,6 @@ export const OFFER_NAMES: Record<OfferKind, string> = {
   autocompact: '自動要約の提案',
   window: '自動要約のタイミングの提案',
   boundary: '区切りで新しく始める提案',
-  worker: '軽量エージェントの提案',
   model: '軽いモデルへの提案',
   effort: '考える深さの提案',
   suggest: 'プロンプト提案をオフにする提案',
@@ -127,19 +126,6 @@ const window: Rule = ({ facts: f }) => {
   }
 }
 
-const worker: Rule = ({ facts: f, modes }) => {
-  if (f.bigOutput === null || modes.isWorkerOn) return null
-  return {
-    id: 'worker',
-    kind: 'worker',
-    level: 'notice',
-    title: `大きな読み込みがありました（約${formatTokens(f.bigOutput.tokens)} tok）`,
-    why: '調べもののたびに本体の会話が膨らむと、以降の返信が毎回重くなります。',
-    does: '調べもの用の軽いエージェント（Haiku）を使えるようにします。このセッションの間だけ。変更を伴うコマンドは、これまでどおり許可を聞かれます。',
-    accept: '使えるようにする',
-  }
-}
-
 const model: Rule = ({ facts: f, modes, modelRow: row }) => {
   if (row === null || modes.previousModel !== null) return null
   const convo = f.conversationTokens
@@ -189,7 +175,7 @@ const suggest: Rule = ({ facts: f }) => {
 }
 
 /** Most urgent first: a conversation about to fill, then a natural break, then the rest. */
-const RULES: Rule[] = [compact, boundary, autocompact, window, worker, model, effort, suggest]
+const RULES: Rule[] = [compact, boundary, autocompact, window, model, effort, suggest]
 
 /** Every suggestion that fits the situation now, muted or not, most urgent first. */
 export const computeOffers = (c: OfferContext): Offer[] => RULES.flatMap(rule => rule(c) ?? [])

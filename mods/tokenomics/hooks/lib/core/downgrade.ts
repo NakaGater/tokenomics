@@ -72,7 +72,7 @@ export const decideSpawn = (s: SpawnFacts, recent: readonly RecentSpawn[], descr
 }
 
 const KNOWN_TYPES: readonly string[] = ['Explore', 'Plan', 'general-purpose', 'claude', 'statusline-setup', 'fork', 'teammate']
-const OWN_TYPES = /^tokenomics:(?:scout|test-runner|log-digest|light-worker)$/
+const OWN_TYPES = /^tokenomics:(?:scout|test-runner|log-digest)$/
 
 /**
  * A word safe to keep in the ledger for a subagent type. The names the engine and this plugin give are kept; an agent from another

@@ -34,6 +34,8 @@ export type PaneProps = FrameProps & {
   offers: readonly Offer[]
   /** What the savings layer has done today. */
   savings: Savings
+  /** What it has kept out of this session (the band's figure). */
+  sessionSavings: Savings
   /** The context broken down, or null before it was asked for. */
   heavy: HeavyItem[] | null
   isCompacting: boolean
@@ -46,7 +48,7 @@ export type PaneProps = FrameProps & {
   onSettings: () => void
 }
 
-/** The settings pane: what the person can set or stop, and the cat's demonstration. */
+/** The settings pane: what the person can set or stop, and Clawd's demonstration. */
 export type SettingsPaneProps = FrameProps & {
   facts: Facts
   /** What was accepted and is still running. */
@@ -170,12 +172,12 @@ export const Pane = (p: PaneProps) => {
 
       <Box flexDirection="column">
         <Heading ui={p.ui}>いまの状態</Heading>
-        {statusRows(p.facts, p.savings)
+        {statusRows(p.facts, p.savings, p.sessionSavings)
           // The chart below says what the requests of the turn were, one by one.
           .filter(row => row.label !== '今回のリクエスト')
           .map(row => (
           <Box gap={2}>
-            <Box width={LABEL_CELLS}>
+            <Box width={LABEL_CELLS} flexShrink={0}>
               <Text dimColor>{row.label}</Text>
             </Box>
             <Text>{row.value}</Text>
@@ -225,7 +227,7 @@ export const Pane = (p: PaneProps) => {
   )
 }
 
-/** What the person can set, stop or bring back: the auto-compact size, the savings running, the suggestions put off, the cat. */
+/** What the person can set, stop or bring back: the auto-compact size, the savings running, the suggestions put off, Clawd. */
 export const SettingsPane = (p: SettingsPaneProps) => {
   const { Box, Text, Button } = p.ui
   const autoSize = windowView(p.facts)
@@ -261,8 +263,8 @@ export const SettingsPane = (p: SettingsPaneProps) => {
 
       {p.hasCat && (
         <Box flexDirection="column">
-          <Heading ui={p.ui}>ねこのようす</Heading>
-          <Text dimColor>会話が重くなるほど、帯の猫は速く走ります。押すと、しばらくその様子を見られます。</Text>
+          <Heading ui={p.ui}>Clawd のようす</Heading>
+          <Text dimColor>会話が重くなるほど、帯の Clawd は速く走ります。押すと、しばらくその様子を見られます。</Text>
           <Box gap={1} flexWrap="wrap">
             {CAT_DEMOS.map(item => (
               <Button key={`cat-${item.demo}`} label={item.label} onPress={() => p.onCat(item.demo)} />

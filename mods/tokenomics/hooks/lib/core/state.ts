@@ -1,5 +1,7 @@
+import type { BatchGroup } from './batch'
 import type { RecentSpawn } from './downgrade'
 import type { ForkRun } from './forks'
+import type { KeptItem } from './flow'
 import type { Candidate } from './nudges'
 import { type SteerState, freshSteer } from './steer'
 import type { HeavyLevel } from './economics'
@@ -18,6 +20,8 @@ export type CoreState = {
   /** The session, as a short hash. */
   sid: string
   ledger: Ledger
+  /** The events this process has recorded since the session began or was last cleared: what the band calls "the session" (`ledger` is every session's, today and before). */
+  mine: Ledger
   /** Events not yet written to the store. */
   pending: RawEvent[]
   breaker: Breaker
@@ -72,6 +76,19 @@ export type CoreState = {
   readBack: Set<string>
   /** The notes written this session by file name (never the path), to count a note's first opening (`spend.ts`). */
   notes: Map<string, KnownNote>
+  /** B7: what the session was written down as in the ledger (once per session, however often the prompt is composed). */
+  isBatchNoted: boolean
+  /**
+   * What the savings layer has kept out of the main conversation and that is still out of it, by tool use (digest) or subagent
+   * (delegation): each is spared from every request until the window is cleared or compacted (`lib/core/flow`).
+   */
+  kept: Map<string, KeptItem>
+  /** Tokens that went into `kept` since the last request began: the request they first miss writes the cache for them. */
+  keptFresh: number
+  /** Counted up at every /clear and compaction: a run that ended in an earlier window keeps nothing out of this one. */
+  epoch: number
+  /** B7: the half this session is in, once it is known that the sentence is being made a question of (`auto`, a prompt that takes a section); null otherwise. */
+  batchGroup: BatchGroup | null
 }
 
 export const freshState = (options: CoreOptions): CoreState => ({
@@ -79,6 +96,7 @@ export const freshState = (options: CoreOptions): CoreState => ({
   arm: 'treat',
   sid: sessionKey('unknown'),
   ledger: emptyLedger,
+  mine: emptyLedger,
   pending: [],
   breaker: {},
   saveDir: '',
@@ -110,6 +128,11 @@ export const freshState = (options: CoreOptions): CoreState => ({
   steer: freshSteer(),
   readBack: new Set(),
   notes: new Map(),
+  isBatchNoted: false,
+  kept: new Map(),
+  keptFresh: 0,
+  epoch: 0,
+  batchGroup: null,
 })
 
 /** A new session: what belonged to the last conversation is forgotten. */
@@ -136,6 +159,17 @@ export const resetSession = (s: CoreState): void => {
   s.steer = freshSteer()
   s.readBack.clear()
   s.notes.clear()
+  s.isBatchNoted = false
+  s.batchGroup = null
+  s.mine = emptyLedger
+  newWindow(s)
+}
+
+/** The conversation's window starts over (a /clear or a compaction): what was kept out of the old one no longer adds up. */
+export const newWindow = (s: CoreState): void => {
+  s.kept.clear()
+  s.keptFresh = 0
+  s.epoch += 1
 }
 
 /** `/clear`: the conversation is gone, the session goes on. */
@@ -150,6 +184,9 @@ export const resetConversation = (s: CoreState): void => {
   s.lastEndedAt = null
   s.lastIdleMs = null
   s.isColdTurn = false
+  // The band's session starts over with it (its tokens and turns do), and what was saved in the old one is no longer part of it.
+  s.mine = emptyLedger
+  newWindow(s)
 }
 
 export const FILE_FIELDS = ['file_path', 'path', 'notebook_path'] as const

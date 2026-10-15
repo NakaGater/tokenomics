@@ -330,8 +330,8 @@ describe('status', () => {
   test('every label of the status rows fits the label column of the pane, with room to spare', () => {
     const turn = turnTokens({ input_tokens: 2, output_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1_000, model: 'm' }, [1_102])
     const f = applyTurn({ ...at(40), agentRuns: 1, agentTokens: 5_000, costUsd: null, rateLimits: [{ kind: 'seven_day', percentUsed: 9 }] }, turn, 1, 0, 0)
-    const savings = { digests: 1, tokens: 1, milliUsd: 1, recovered: 0, forks: 1, keptTokens: 1, keptMilliUsd: 1, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, wouldFire: 1 }
-    const widest = Math.max(...statusRows(f, savings).map(r => cellWidth(r.label)))
+    const savings = { digests: 1, tokens: 1, milliUsd: 1, recovered: 0, forks: 1, keptTokens: 1, keptMilliUsd: 1, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 1, subTokens: 1, flowReqs: 1, flowTokens: 1, flowKeptTokens: 1, flowMicroUsd: 1, wouldFire: 1 }
+    const widest = Math.max(...statusRows(f, savings, savings).map(r => cellWidth(r.label)))
     expect(widest).toBeLessThanOrEqual(LABEL_CELLS - 2)
   })
 
@@ -431,7 +431,7 @@ describe('turns that something sent in set going', () => {
 
 describe('mascot', () => {
   test('every face is made of narrow characters only, and fits the room kept for it', () => {
-    // ASCII and the halfwidth marks (ｪ ･). `•` and `ω` are ambiguous-width: two cells in a terminal set for Japanese.
+    // ASCII and the halfwidth marks (･). `•` and `ω` are ambiguous-width: two cells in a terminal set for Japanese.
     for (const face of Object.values(FACE)) {
       expect(face).toMatch(/^[\x20-\x7e\uff61-\uff9f]+$/)
       expect(face.length).toBeLessThanOrEqual(FACE_CELLS)
@@ -499,7 +499,7 @@ describe('modes', () => {
     expect(tagOf(initialModes)).toBeNull()
     expect(tagOf({ ...initialModes, isHandoffOn: true })).toBeNull()
     expect(tagOf({ ...initialModes, effort: 'low' })).toBe('節約中: effort 低め')
-    expect(tagOf({ ...initialModes, effort: 'medium', isWorkerOn: true })).toBe('節約中: effort ふつう・軽量エージェント')
+    expect(tagOf({ ...initialModes, effort: 'medium', isHandoffOn: true })).toBe('節約中: effort ふつう')
   })
 })
 
@@ -670,11 +670,10 @@ describe('offers', () => {
     expect(kinds(ctx(at(30, { boundary: 'commit' })))).toEqual([])
   })
 
-  test('a large read, of a command output or anything else, proposes the helper, until it is on', () => {
+  test('a large read, of a command output or anything else, proposes nothing: the digest and the scout deal with it, not an offer', () => {
     const big = (tool: string) => at(10, { bigOutput: { id: 'x', tool, tokens: 14_000 } })
-    expect(kinds(ctx(big('Bash')))).toEqual(['worker'])
-    expect(kinds(ctx(big('Read')))).toEqual(['worker'])
-    expect(kinds(ctx(big('Bash'), { modes: { isWorkerOn: true } }))).toEqual([])
+    expect(kinds(ctx(big('Bash')))).toEqual([])
+    expect(kinds(ctx(big('Read')))).toEqual([])
   })
 
   test('a lighter model is proposed only while the conversation is small, and when it would help', () => {
@@ -737,7 +736,7 @@ describe('offers', () => {
 
   test('the most urgent is put first, whatever else fits', () => {
     const f = at(92, { ...light, boundary: 'commit', conversationTokens: 50_000, isAutoCompactEnabled: false, canSetAutoCompact: true, bigOutput: { id: 'x', tool: 'Bash', tokens: 20_000 }, isSuggestEnabled: true, turns: 8 })
-    expect(kinds(ctx(f))).toEqual(['compact-90', 'boundary', 'autocompact', 'worker', 'effort', 'suggest'])
+    expect(kinds(ctx(f))).toEqual(['compact-90', 'boundary', 'autocompact', 'effort', 'suggest'])
   })
 
   test('the next one is the most urgent not yet made and not muted', () => {
@@ -755,16 +754,16 @@ describe('offers', () => {
   })
 
   test('a heavy spell that has ended is forgotten, so the next one is offered anew; a once-a-session offer is not', () => {
-    const seen = ['compact-70', 'worker', 'effort']
+    const seen = ['compact-70', 'model', 'effort']
     expect(pruneSeen(seen, at(80))).toBe(seen)
-    expect(pruneSeen(seen, at(40))).toEqual(['worker', 'effort'])
+    expect(pruneSeen(seen, at(40))).toEqual(['model', 'effort'])
     // Past 90 the 70 spell goes on; falling back to 80 ends only the 90 one.
     expect(pruneSeen(['compact-70', 'compact-90'], at(95))).toEqual(['compact-70', 'compact-90'])
     expect(pruneSeen(['compact-70', 'compact-90'], at(80))).toEqual(['compact-70'])
   })
 
   test('every kind has a name for the pane to list when it is muted', () => {
-    const everyKind: OfferKind[] = ['compact', 'autocompact', 'boundary', 'worker', 'model', 'effort', 'suggest']
+    const everyKind: OfferKind[] = ['compact', 'autocompact', 'boundary', 'model', 'effort', 'suggest']
     for (const kind of everyKind) expect(OFFER_NAMES[kind]).toBeDefined()
   })
 
@@ -803,8 +802,8 @@ describe('offers', () => {
 describe('what was accepted', () => {
   test('is listed with the words that end it, and is empty at the start', () => {
     expect(activeSavings(initialModes)).toEqual([])
-    const all = activeSavings({ ...initialModes, effort: 'low', isWorkerOn: true, isHandoffOn: true, previousModel: 'opus' })
-    expect(all.map(a => a.key)).toEqual(['effort', 'worker', 'handoff', 'model'])
+    const all = activeSavings({ ...initialModes, effort: 'low', isHandoffOn: true, previousModel: 'opus' })
+    expect(all.map(a => a.key)).toEqual(['effort', 'handoff', 'model'])
     // Where the note is on by default it is not an accepted saving to end.
     expect(activeSavings({ ...initialModes, isHandoffOn: true }, true)).toEqual([])
     expect(all.find(a => a.key === 'model')?.stop).toBe('元に戻す')

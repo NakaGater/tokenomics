@@ -114,8 +114,6 @@ export type EffortSetting = 'low' | 'medium'
 export type Modes = {
   /** Cap on how hard turns think; null leaves the session's own setting. */
   effort: EffortSetting | null
-  /** The light read-only helper is offered to the model. */
-  isWorkerOn: boolean
   /** Every compaction, the engine's too, is preceded by a note of what it would lose, saved to a file. */
   isHandoffOn: boolean
   /** The model the person had before the mod switched it, so it can be put back. */
@@ -125,10 +123,12 @@ export type Modes = {
 }
 
 /**
- * What today's ledger says the mod has done for the person, for the pane. Two kinds of figure, never added together:
- * the digest's (`digests`, `tokens`, `milliUsd`: outputs that were cut; `recovered` of them the model went back for), and the
- * estimate for work handed to the plugin's skills and agents (`forks` runs kept `keptTokens` of reading out of the conversation,
- * `milliUsd` thousandths of a dollar; of the `forkReaders` that read files, `forkRereads` files were read again by the conversation).
+ * What today's ledger says the mod has done for the person, for the pane. Three kinds of figure, kept apart here (the band adds them
+ * up into one, `savedAll` in lib/status): the digest's (`digests`, `tokens`, `milliUsd`: outputs that were cut; `recovered` of them the
+ * model went back for), the estimate for work handed to the plugin's skills and agents (`forks` runs kept `keptTokens` of reading
+ * out of the conversation, `milliUsd` thousandths of a dollar; of the `forkReaders` that read files, `forkRereads` files were read
+ * again by the conversation), and the outputs cut inside subagents (`subCuts` of them, `subTokens` the subagents did not have to
+ * read; the conversation would never have read them).
  * `wouldFire` counts the suggestions it would have made.
  */
 export type Savings = {
@@ -145,13 +145,24 @@ export type Savings = {
   /** What the runs handed over cost on the input side (thousandths of a dollar, list prices), and how many gained nothing. */
   forkCostMilliUsd: number
   forkLosses: number
+  subCuts: number
+  subTokens: number
+  /**
+   * What was kept out of the conversation spares every request that follows it (until a /clear or a compaction): `flowReqs` requests
+   * carried less, by `flowTokens` of the digest's cuts and `flowKeptTokens` of the estimate for handed-over work, all added up over
+   * the requests; `flowMicroUsd` is what that spared on the input side (millionths of a dollar: one cache write, then a read per request).
+   */
+  flowReqs: number
+  flowTokens: number
+  flowKeptTokens: number
+  flowMicroUsd: number
 }
 
 /** The /config Model row: what it holds now and the values it takes. */
 export type ModelRow = { value: string; options: string[] }
 
 /** The suggestions the mod makes: each a way to spend fewer tokens that the person may accept. */
-export type OfferKind = 'compact' | 'autocompact' | 'window' | 'boundary' | 'worker' | 'model' | 'effort' | 'suggest'
+export type OfferKind = 'compact' | 'autocompact' | 'window' | 'boundary' | 'model' | 'effort' | 'suggest'
 
 /** The suggestion on screen now, and where: a dialog pane, or a card above the band where no pane fits. */
 export type OpenOffer = { id: string; kind: OfferKind; view: 'dialog' | 'card' }
@@ -179,6 +190,8 @@ declare module 'claude-code' {
       muted: OfferKind[]
       /** What the savings layer has done today, from its ledger. */
       savings: Savings
+      /** The same for this session only (since it began or was last cleared): the band's figure. */
+      sessionSavings: Savings
       /** The one-line suggestion made after the last reply, shown in the cat's card until the next prompt; null when none. */
       nudge: string | null
       /** The auto-compact size the person has stepped to or set in the pane; null until they do (the recommended one is shown). */

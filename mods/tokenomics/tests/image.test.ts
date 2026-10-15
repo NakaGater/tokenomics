@@ -15,7 +15,7 @@ const measureTokens = (tokens: number, window = 1_000_000) =>
 
 const KITTY = { ORCA_IMAGE_PROTOCOL: 'kitty' }
 
-/** Every picture the sheet plays, as the looks that choose them. */
+/** Every picture, as the looks that choose them. */
 const looks = (): Look[] => [
   ...Array.from({ length: PICTURES.run }, (_, step) => ({ pose: 'run' as const, frame: step % FRAMES.run, isSweating: false, step, isWalking: false })),
   ...Array.from({ length: PICTURES.walk }, (_, step) => ({ pose: 'run' as const, frame: step % FRAMES.run, isSweating: false, step, isWalking: true })),
@@ -24,19 +24,19 @@ const looks = (): Look[] => [
   ...Array.from({ length: PICTURES.jump }, (_, step) => ({ pose: 'jump' as const, frame: step % FRAMES.jump, isSweating: false, step })),
 ]
 
-describe('the cat’s pictures', () => {
-  test('every look has a picture: a PNG of 256 x 128 pixels, wider than tall as the 16 x 4 cells are', () => {
+describe('Clawd’s pictures', () => {
+  test('every look has a picture: a PNG of 256 x 160 pixels, wider than tall as the 16 x 5 cells are', () => {
     for (const look of looks()) {
       const bytes = fromBase64(catPng(look))
       expect([...bytes.slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10])
       const header = new DataView(bytes.buffer, bytes.byteOffset)
       expect(header.getUint32(16)).toBe(256)
-      expect(header.getUint32(20)).toBe(128)
+      expect(header.getUint32(20)).toBe(160)
       // 8-bit RGBA: the picture has a clear ground.
       expect(bytes[24]).toBe(8)
       expect(bytes[25]).toBe(6)
     }
-    expect(256 / 128).toBe(CAT_COLS / CAT_ROWS / 2)
+    expect(256 / 160).toBe(CAT_COLS / CAT_ROWS / 2)
   })
 
   test('the pictures of a cycle differ, and a run, a walk, a sweat, a sleep and a jump are told apart', () => {
@@ -46,7 +46,8 @@ describe('the cat’s pictures', () => {
       const cycle = looks().filter(l =>
         pose === 'jump' ? l.pose === 'jump' : l.pose === 'run' && (pose === 'sweat' ? l.isSweating : !l.isSweating && (l.isWalking === true) === (pose === 'walk')),
       )
-      expect(new Set(cycle.map(of)).size).toBe(sizes[pose])
+      // A walk passes through the same picture on its way each way: that one is played twice.
+      expect(new Set(cycle.map(of)).size).toBe(pose === 'walk' ? sizes[pose] - 1 : sizes[pose])
     }
     // Asleep the z's grow and shrink: the middle picture is played twice.
     expect(new Set(looks().filter(l => l.pose === 'sleep').map(of)).size).toBe(PICTURES.sleep - 1)
@@ -69,7 +70,7 @@ describe('the cat’s pictures', () => {
 })
 
 describe('the cat as a picture in the band', () => {
-  test('where the terminal says it draws pictures, the card shows the cat as an Image, 16 x 4 cells, and keeps the gauge in cells', async ($, on) => {
+  test('where the terminal says it draws pictures, the card shows Clawd as an Image, 16 x 5 cells, and keeps the gauge in cells', async ($, on) => {
     engine(on, { env: KITTY })
     await $.session.start(START)
     const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
@@ -125,11 +126,12 @@ describe('the cat as a picture in the band', () => {
     })
   }
 
-  test('the frames are blits of a picture, no redraw, and go through the sheet in order', async ($, on) => {
+  test('the frames are blits of a picture, no redraw, and go through the pictures in order', async ($, on) => {
     const calls = engine(on, { env: KITTY })
     await $.session.start(START)
     const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
     await $.session.measure(measureTokens(BASELINE + 150_000))
+    await $.prompt.submit({ text: 'hello' } as never)
     calls.blits.length = 0
     await calls.clock.advance(1500)
 
@@ -146,10 +148,11 @@ describe('the cat as a picture in the band', () => {
     await ui.unmount()
   })
 
-  test('a slow cat walks and a sweating one is the cat in a sweat', async ($, on) => {
+  test('a slow Clawd walks and a sweating one is Clawd in a sweat', async ($, on) => {
     const calls = engine(on, { env: KITTY })
     await $.session.start(START)
     const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+    await $.prompt.submit({ text: 'hello' } as never)
 
     await $.session.measure(measureTokens(BASELINE + 40_000))
     calls.blits.length = 0
@@ -174,6 +177,7 @@ describe('the cat as a picture in the band', () => {
     await $.session.start(START)
     const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
     await $.session.measure(measureTokens(BASELINE + 120_000))
+    await $.prompt.submit({ text: 'hello' } as never)
     await calls.clock.advance(1500)
 
     expect(await ui.find({ type: 'Image' })).toBeUndefined()

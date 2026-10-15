@@ -20,6 +20,8 @@ export type ForkRun = {
     turn: number
     /** What the run itself cost on the input side, in millionths of a dollar at list prices (null when not known): a run costs a few thousandths. */
     microUsd?: number | null
+    /** The window of the main conversation it ended in (`CoreState.epoch`): after a /clear or a compaction it keeps nothing out of the new one. */
+    epoch?: number
   }
 }
 
@@ -46,7 +48,7 @@ export const forkType = (skill: string): string => `fork_${skill}`
 
 /**
  * The skill or agent of this plugin a subagent kind stands for (`fork_scout`, `tokenomics:test-runner`), or null for any other:
- * the engine's own agents, a person's, and this plugin's general worker, which does more than look.
+ * the engine's own agents and a person's.
  */
 export const ownName = (type: string): string | null => {
   if (type.startsWith('fork_')) {
@@ -74,7 +76,7 @@ export const forkRead = (run: ForkRun | undefined, tokens: number): ForkRun => (
 /** The run with its end noted. */
 export const forkEnded = (
   run: ForkRun | undefined,
-  ended: { reportTokens: number; spent: number | null; isReader: boolean; turn: number; microUsd?: number | null },
+  ended: { reportTokens: number; spent: number | null; isReader: boolean; turn: number; microUsd?: number | null; epoch?: number },
 ): ForkRun => ({
   ...(run ?? blank),
   ended: { ...ended, reportTokens: Math.max(0, Math.round(ended.reportTokens)) },

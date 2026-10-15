@@ -32,7 +32,7 @@ import {
   sumCounts,
 } from '../hooks/lib/core/ledger'
 import { DEFAULT_OPTIONS, cacheTtlMs, parseOptions } from '../hooks/lib/core/options'
-import { savingsRows } from '../hooks/lib/status'
+import { savedAll, savingsRows, sessionSavingRows } from '../hooks/lib/status'
 import { BREAKER_LIMIT, MEASURES, MEASURE_IDS, armOf, failed, isTripped, modeOf, succeeded } from '../hooks/lib/core/policy'
 import type { Savings } from '../types'
 
@@ -41,7 +41,7 @@ const DAY = 86_400_000
 const round = (x: number | null, digits: number): number | null => (x === null ? null : Number(x.toFixed(digits)))
 const NOW = Date.UTC(2026, 9, 10, 12, 0, 0)
 /** A day with nothing saved. */
-const NOTHING: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 }
+const NOTHING: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 }
 
 describe('options', () => {
   test('a manifest with nothing set gives the defaults', () => {
@@ -50,8 +50,8 @@ describe('options', () => {
   })
 
   test('values that fit are taken, and numbers are held to their range', () => {
-    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', handoffNote: false, holdoutPercent: 250, cacheTtlMinutes: 500 })
-    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', nudges: 'off', handoffNote: false, holdoutPercent: 100, cacheTtlMinutes: 120 })
+    const o = parseOptions({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', batch: 'off', nudges: 'off', handoffNote: false, holdoutPercent: 250, cacheTtlMinutes: 500 })
+    expect(o).toEqual({ hud: false, digest: 'observe', delegation: 'auto', steer: 'auto', batch: 'off', nudges: 'off', handoffNote: false, holdoutPercent: 100, cacheTtlMinutes: 120 })
     expect(parseOptions({ cacheTtlMinutes: -3 }).cacheTtlMinutes).toBe(0)
   })
 
@@ -140,8 +140,8 @@ describe('policy', () => {
   const treat = (over: Partial<typeof DEFAULT_OPTIONS> = {}) => ({ ...DEFAULT_OPTIONS, ...over })
 
   test('every measure has a row, owned by one of the settings', () => {
-    expect(MEASURE_IDS).toEqual(['A1', 'B1', 'B2', 'B3', 'B6', 'C1', 'C2', 'C3'])
-    for (const id of MEASURE_IDS) expect(['digest', 'delegation', 'steer', 'nudges']).toContain(MEASURES[id].option)
+    expect(MEASURE_IDS).toEqual(['A1', 'B1', 'B2', 'B3', 'B6', 'B7', 'C1', 'C2', 'C3'])
+    for (const id of MEASURE_IDS) expect(['digest', 'delegation', 'steer', 'batch', 'nudges']).toContain(MEASURES[id].option)
   })
 
   test('the defaults: the digest acts, the subagent and suggestion measures watch', () => {
@@ -163,6 +163,16 @@ describe('policy', () => {
     expect(modeOf('B6', treat({ delegation: 'auto' }), 'treat')).toBe('observe')
     expect(modeOf('B6', treat({ steer: 'auto' }), 'treat')).toBe('auto')
     expect(modeOf('B1', treat({ steer: 'auto' }), 'treat')).toBe('observe')
+  })
+
+  test('the sentence about reads (B7) has its own setting, which is on unless it is turned down, and is not reached by the others', () => {
+    expect(modeOf('B7', treat(), 'treat')).toBe('auto')
+    expect(modeOf('B7', treat({ batch: 'observe' }), 'treat')).toBe('observe')
+    expect(modeOf('B7', treat({ batch: 'off' }), 'treat')).toBe('off')
+    expect(modeOf('B7', treat({ steer: 'auto', delegation: 'auto', digest: 'off' }), 'treat')).toBe('auto')
+    expect(modeOf('B6', treat({ batch: 'auto' }), 'treat')).toBe('observe')
+    // A person held back is told nothing more than anyone: the sentence is only watched for.
+    expect(modeOf('B7', treat(), 'control')).toBe('observe')
   })
 
   test('the digest, where there is no place of the person’s own to keep its copies, only watches', () => {
@@ -365,13 +375,64 @@ describe('savings rows', () => {
     expect(savingsRows({ ...day, recovered: 1 }, true)[0]!.value).toBe('大きな出力を 3 回縮め、約 21k tok を会話に入れずに済みました。あとで全文を取りに戻ったのは 1 回')
   })
 
-  test('the estimate for work handed to a skill or agent is a row of its own, called an estimate, and never added to the cut figure', () => {
+  test('the estimate for work handed to a skill or agent is a row of its own, called an estimate; where there are two kinds a row on top adds them up', () => {
     const rows = savingsRows({ ...handed, digests: 3, tokens: 21_000, milliUsd: 115, wouldFire: 2 }, false)
-    expect(rows.map(r => r.label)).toEqual(['今日の節約（確定）', '今日の節約（推定）', '記録のみ'])
-    expect(rows[0]!.value).toContain('約 21k tok')
-    expect(rows[1]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）、見込み約 $0.60。任せた先の費用は約 $0.00（入力側）で、差し引き 約 $0.60')
-    expect(rows.some(r => r.value.includes('41k'))).toBe(false)
+    expect(rows.map(r => r.label)).toEqual(['今日の節約（合計）', '今日の節約（確定）', '今日の節約（推定）', '記録のみ'])
+    expect(rows[0]!.value).toBe('約 41k tok ＝ 確定 21k ＋ 推定 20k（今日、この端末のすべてのセッションの分。推定を含む）')
+    expect(rows[1]!.value).toContain('約 21k tok')
+    expect(rows[2]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）、見込み約 $0.60。任せた先の費用は約 $0.00（入力側）で、差し引き 約 $0.60')
+    // One kind alone is its own total: there is nothing to add up.
+    expect(savingsRows(handed, true).map(r => r.label)).toEqual(['今日の節約（推定）'])
     expect(savingsRows(handed, true)[0]!.value).toBe('調べものやテストを 2 回任せ、会話に入れずに済んだ読み込みは約 20k tok（控えめな推定）')
+  })
+
+  test('the outputs cut inside subagents are a row of their own, and part of the total', () => {
+    const sub = { ...NOTHING, subCuts: 4, subTokens: 14_755 }
+    expect(savingsRows(sub, false).map(r => r.label)).toEqual(['今日の節約（サブ）'])
+    expect(savingsRows(sub, false)[0]!.value).toBe('サブエージェントが読む大きな出力を 4 回縮め、約 15k tok を読まずに済ませました（会話が読むものではない分。上の「確定」には入れていません）')
+    const rows = savingsRows({ ...day, subCuts: 4, subTokens: 14_755, forks: 2, keptTokens: 19_600, keptMilliUsd: 600 }, true)
+    expect(rows.map(r => r.label)).toEqual(['今日の節約（合計）', '今日の節約（確定）', '今日の節約（推定）', '今日の節約（サブ）', '記録のみ'])
+    expect(rows[0]!.value).toContain('約 55k tok ＝ 確定 21k ＋ 推定 20k ＋ サブエージェント内 15k')
+  })
+
+  test('the band’s figure is every kind added up, and says whether an estimate is in it', () => {
+    expect(savedAll(NOTHING)).toMatchObject({ tokens: 0, isEstimated: false })
+    expect(savedAll({ ...day })).toMatchObject({ tokens: 21_000, isEstimated: false })
+    expect(savedAll({ ...NOTHING, forks: 2, keptTokens: 19_600 })).toMatchObject({ tokens: 19_600, isEstimated: true })
+    expect(savedAll({ ...NOTHING, subCuts: 1, subTokens: 700 })).toMatchObject({ tokens: 700, isEstimated: true })
+    expect(savedAll({ ...day, forks: 2, keptTokens: 19_600, subCuts: 4, subTokens: 14_755 })).toMatchObject({ tokens: 55_355, isEstimated: true })
+  })
+
+  test('where requests were counted, each kind is what it spared them (延べ), never less than the size it was cut at', () => {
+    const spread = { ...day, flowReqs: 40, flowTokens: 400_000 }
+    expect(savedAll(spread)).toMatchObject({ tokens: 400_000, isSpread: true })
+    // The requests of the day do not reach back to what was cut the evening before: its size stands in.
+    expect(savedAll({ ...spread, flowTokens: 5_000 })).toMatchObject({ tokens: 21_000, isSpread: true })
+    expect(savedAll({ ...spread, forks: 2, keptTokens: 19_600, flowKeptTokens: 90_000, subCuts: 1, subTokens: 700 })).toMatchObject({ tokens: 490_700, isSpread: true, isEstimated: true })
+    expect(savedAll(day).isSpread).toBe(false)
+  })
+
+  test('the session’s row is the band’s figure with what it is made of, and is not there when nothing was kept out', () => {
+    expect(sessionSavingRows(NOTHING)).toEqual([])
+    const [alone] = sessionSavingRows(day)
+    expect(alone!.label).toBe('このセッションの節約')
+    expect(alone!.value).toBe('約 21k tok（帯の「節約（延べ）」と同じ数字）＝ 確定 21k。/clear で数え直します')
+    const [all] = sessionSavingRows({ ...day, flowReqs: 40, flowTokens: 400_000, forks: 2, keptTokens: 19_600, subCuts: 4, subTokens: 14_755 })
+    expect(all!.value).toBe('約 434k tok（帯の「節約（延べ）」と同じ数字）＝ 確定 400k ＋ 推定 20k ＋ サブエージェント内 15k。確定と推定は延べ。推定を含む。/clear で数え直します')
+  })
+
+  test('the 延べ row counts the requests, tells the dollars off a subscription only, and takes the assumed dollars out of the 確定 row', () => {
+    const spread = { ...day, flowReqs: 40, flowTokens: 400_000, flowMicroUsd: 31_000 }
+    const rows = savingsRows(spread, false)
+    expect(rows.map(r => r.label)).toEqual(['今日の節約（合計）', '今日の節約（延べ）', '今日の節約（確定）', '記録のみ'])
+    expect(rows[0]!.value).toBe('約 400k tok ＝ 確定 400k（今日、この端末のすべてのセッションの分。確定と推定は延べ）')
+    expect(rows[1]!.value).toContain('のべ 40 回のリクエストに載らずに済みました（延べ約 400k tok、入力側の見込み約 $0.03）')
+    // One dollar amount: the measured one.
+    expect(rows[2]!.value).toBe('大きな出力を 3 回縮め、約 21k tok を会話に入れずに済みました')
+    expect(savingsRows(spread, true)[1]!.value).not.toContain('$')
+    // Before any request followed, there is no such row, and the dollars are as they were.
+    expect(savingsRows(day, false).map(r => r.label)).toEqual(['今日の節約（確定）', '記録のみ'])
+    expect(savingsRows(day, false)[0]!.value).toContain('見込み約 $0.12')
   })
 
   test('the runs’ own cost is set against what they kept out, and a run that gained nothing is counted', () => {

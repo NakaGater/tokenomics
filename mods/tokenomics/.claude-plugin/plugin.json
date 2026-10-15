@@ -1,14 +1,14 @@
 {
   "name": "tokenomics",
-  "version": "0.6.6",
+  "version": "0.7.2",
   "description": "Shows how much of the context a session has used, says what to do about it at the moment it helps, and quietly keeps big outputs and lighter subagents from costing more than they should.",
   "author": { "name": "NakaGater" },
   "types": "./types/index.d.ts",
   "userConfig": {
     "hud": {
       "type": "boolean",
-      "title": "猫とバンドを表示する",
-      "description": "入力欄の上の猫・ゲージ・提案を表示します（ターミナルのみ）。オフでも、節約の仕組みは動きます。",
+      "title": "Clawd とバンドを表示する",
+      "description": "入力欄の上の Clawd・ゲージ・提案を表示します（ターミナルのみ）。オフでも、節約の仕組みは動きます。",
       "default": true
     },
     "digest": {
@@ -30,6 +30,13 @@
       "title": "調査・テスト・ログをスキルへ誘導する",
       "description": "auto: モデル自身が検索を重ねたり（2 回目から）、テスト全体を流したり、長いログを読んだりしようとしたとき、止めて、軽いスキル（scout・test-summary・log-digest）を使えないか考えさせる（同じ呼び出しをもう一度すれば実行される。テストとログは毎回、検索は押し通すほど間隔を空けて）／observe: 止めるはずだった場面を記録だけ／off: 何もしない",
       "default": "observe",
+      "options": ["auto", "observe", "off"]
+    },
+    "batch": {
+      "type": "string",
+      "title": "読み取りをまとめて頼むよう一文を添える",
+      "description": "auto: システムプロンプトに「互いに頼らない読み取りは同じ応答でまとめて頼む」という一文を足す（効果を測るため、半分のセッションには足さない）／observe: 足さずに、足すはずだった回数を記録だけ／off: 何もしない",
+      "default": "auto",
       "options": ["auto", "observe", "off"]
     },
     "nudges": {
@@ -54,7 +61,7 @@
     "cacheTtlMinutes": {
       "type": "number",
       "title": "キャッシュの寿命（分）",
-      "description": "0 なら自動（API キーは 5 分、サブスクリプションは 60 分）。空き時間がこれを超えると、キャッシュが切れたとみなします。",
+      "description": "0 なら自動（API キーは 5 分、サブスクリプションは 60 分）。空き時間がこれを超えると、キャッシュが切れたとみなします（Clawd はこのとき眠ります）。0〜120 に丸めます。",
       "default": 0
     }
   }

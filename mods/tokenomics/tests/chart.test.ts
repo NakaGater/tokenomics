@@ -136,7 +136,7 @@ describe('the charts in the pane', () => {
     engine(on, options)
     const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
     expect(await pane.find({ type: 'Text', text: '直近 10 回のリクエスト' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /まだありません。ターンが終わると出ます/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /まだありません。リクエストが返ると出ます/ })).toBeDefined()
 
     await turn($ as never, options, [100_000, 101_000])
     await turn($ as never, options, [102_000, 103_000, 104_000])

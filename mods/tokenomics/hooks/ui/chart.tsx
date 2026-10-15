@@ -47,7 +47,7 @@ export const RequestChart = (p: RequestChartProps) => {
   const shown = p.requests.slice(-columnsFitting(p.columns, p.requests.length))
   const inScale = inputScale(shown)
   const outScale = outputScale(shown)
-  if (inScale === null || outScale === null) return <Text dimColor>まだありません。ターンが終わると出ます。</Text>
+  if (inScale === null || outScale === null) return <Text dimColor>まだありません。リクエストが返ると出ます。</Text>
 
   const inAxis = (row: number): string =>
     row === 0

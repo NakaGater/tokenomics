@@ -265,6 +265,20 @@ describe('the pane’s slider', () => {
     await pane.unmount()
   })
 
+  test('a size moved to but not applied is forgotten when the settings pane is opened again: the slider starts on the recommended size', async ($, on) => {
+    engineOn(on)
+    await start($)
+    const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
+    await pane.press({ key: 'window-stop-200000' })
+    expect(await pane.find({ type: 'Button', text: '200k にする' })).toBeDefined()
+    await pane.unmount()
+
+    await $.command.run({ command: 'tokenomics', args: 'settings', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } } as never)
+    const again = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
+    expect(await again.find({ type: 'Button', text: '300k にする（おすすめ）' })).toBeDefined()
+    await again.unmount()
+  })
+
   test('"標準に戻す" runs /autocompact auto', async ($, on) => {
     const calls = engineOn(on)
     await start($)

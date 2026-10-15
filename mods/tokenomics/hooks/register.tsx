@@ -43,21 +43,23 @@ import { DEMO_MS, type CatState, type Demo, JUMP_STEPS, catView } from './lib/pa
 import { DIGEST, digestOutput, digestPath, isDigestFile, isInsideDir, isNoteFile, normalizeCommand } from './lib/core/digest'
 import { decideSpawn, typeTag } from './lib/core/downgrade'
 import { ASSUMED_TURNS_AFTER, coldTurnUsd, heavyLevel, keptOutUsd, milliUsd, modelFamily, usageInputUsd, warmTurnUsd } from './lib/core/economics'
+import { type KeptItem, requestFlow } from './lib/core/flow'
 import { forkEnded, forkOutcome, forkRead, forkSet, forkType, forkedId } from './lib/core/forks'
 import { shortHash } from './lib/core/hash'
-import { type Kind, type RawEvent, appendRaw, emptyLedger, digestThreshold, exportLedger, parseLedger, retiredNudges, savingsToday, sessionKey } from './lib/core/ledger'
+import { type Kind, MAX_DAYS, type RawEvent, appendRaw, emptyLedger, digestThreshold, exportLedger, parseLedger, retiredNudges, savingsToday, sessionKey } from './lib/core/ledger'
 import { ANSWER_TURNS, clearStakeUsd, coldReturn, risen, topicShift } from './lib/core/moments'
 import { type Candidate, DEMO_LINE, DEMO_SHORT, chooseNudge, nudgeLine, nudgeShort } from './lib/core/nudges'
 import { type Mode, cacheTtlMs, parseOptions } from './lib/core/options'
 import { type MeasureId, armOf, failed, isTripped, modeOf, succeeded } from './lib/core/policy'
-import { freshState, resetConversation, resetSession, touch } from './lib/core/state'
+import { freshState, newWindow, resetConversation, resetSession, touch } from './lib/core/state'
 import { callKind, lightUse, steerAnswered, steerNote, steerSeen, steerStep, steerTurn } from './lib/core/steer'
+import { BATCH_SECTION, batchGroupOf } from './lib/core/batch'
+import { readPathOf, requestShape, type StepShape } from './lib/core/shape'
 import { advisorMs, advisorRead, noteOpenedBy, noteWritten, subagentSpend } from './lib/core/spend'
 import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage'
 import { isBoundaryCommand } from './lib/signals'
-import { report, settingsReport } from './lib/status'
+import { report, savedAll, settingsReport } from './lib/status'
 import { commandArg, commandOf, startsAt, windowView } from './lib/window'
-import { WORKER, WORKER_DESCRIPTION, WORKER_PROMPT, WORKER_TOOLS } from './lib/worker'
 import { Band } from './ui/band'
 import { OfferView } from './ui/offer'
 import { Pane, SettingsPane } from './ui/pane'
@@ -80,7 +82,7 @@ const DIALOG_TAKES_KEYS = false
 const KINDS = Object.keys(OFFER_NAMES) as OfferKind[]
 
 /**
- * Whether the cat, the band, the pane and the dialog are drawn (the `hud` setting). Off, the mod draws nothing and puts no
+ * Whether Clawd, the band, the pane and the dialog are drawn (the `hud` setting). Off, the mod draws nothing and puts no
  * suggestion to the person, and the savings layer (hooks/core.ts) goes on as before. A change of setting loads the module again.
  */
 let isHud = true
@@ -96,22 +98,27 @@ let isTurnRunning = false
 let toolsThisTurn = 0
 /** What each model request of the main loop's running turn used, in order. */
 let requestsThisTurn: RequestSize[] = []
+/** The same requests with what became of their tool calls (the last one is still being filled in while its calls run). */
+let stepShapes: StepShape[] = []
 /** The turn running (or last run) was set going by something sent in, not by the person. */
 let isSentInTurn = false
 
-// The cat on the band moves faster than anything is redrawn, so it lives here and is repainted with `$.ui.blit`:
+// Clawd on the band moves faster than anything is redrawn, so it lives here and is repainted with `$.ui.blit`:
 // one call a frame, no render pass. What it needs of the session is mirrored from the facts as they change.
-/** The band's own id once it has drawn the cat; null while nothing is showing it, which also stops the timer. */
+/** The band's own id once it has drawn Clawd; null while nothing is showing it, which also stops the timer. */
 let catSite: string | null = null
 let catTimer: { cancel: () => void } | null = null
 /** Milliseconds the pending timer was set for. */
 let catDueMs = 0
 /** The latest facts, for the timer to read without asking the engine for them every frame. */
 let catFacts: Facts = initialFacts
-/** Frames shown since the cat last changed what it was doing. */
+/** Frames shown since Clawd last changed what it was doing. */
 let catSteps = 0
-/** Milliseconds the person has been quiet; at five minutes the cat curls up and the timer stops. */
-let catIdleMs = 0
+/**
+ * Milliseconds since the last request (or word, or tool call) kept the prompt cache warm: when the cache's life is over Clawd
+ * curls up and the timer stops. null: nothing has happened in this session yet, so there is no cache.
+ */
+let catIdleMs: number | null = null
 /** Frames of a jump still to play. */
 let catJumpLeft = 0
 let catDemo: Demo | null = null
@@ -122,19 +129,26 @@ let catPhrase = ''
 let catShown = ''
 
 /**
- * Whether the cat is drawn as a picture. The terminal's own words decide whether to try (`imageHint`); the first repaint
- * answers: a blit to a picture the terminal cannot draw is refused. After that the cat is drawn in cells.
+ * Whether Clawd is drawn as a picture. The terminal's own words decide whether to try (`imageHint`); the first repaint
+ * answers: a blit to a picture the terminal cannot draw is refused. After that Clawd is drawn in cells.
  */
 let catImages: 'maybe' | 'yes' | 'no' = 'maybe'
 /** What the terminal's own words say of pictures; null until read, at the first draw of the band or the start of a session (a reload has no start). */
 let imageHint: boolean | null = null
 /** The picture last painted, so a redraw of the band carries on from the frame on show. */
 let catShownPng = ''
-/** The band's last draw gave the cat as a picture. */
+/** The band's last draw gave Clawd as a picture. */
 let catAsImage = false
 let imageProbe: { cancel: () => void } | null = null
 
-const catState = (): CatState => ({ steps: catSteps, idleMs: catIdleMs, jumpLeft: catJumpLeft, demo: catDemo })
+const catState = (): CatState => ({
+  steps: catSteps,
+  idleMs: catIdleMs,
+  // The cache lives as long as the savings layer takes it to (5 minutes on an API key, an hour on a subscription, or the setting).
+  ttlMs: cacheTtlMs(sv.options, catFacts.rateLimits.length > 0),
+  jumpLeft: catJumpLeft,
+  demo: catDemo,
+})
 
 /** What the mod changed in the saved model setting, kept past the session so it can be undone. */
 type Pending = { previous: string; switchedTo: string }
@@ -161,15 +175,15 @@ const nudge = atom({ plugin: 'tokenomics', key: 'nudge' } as const, null as stri
 const windowPick = atom({ plugin: 'tokenomics', key: 'windowPick' } as const, null as number | null)
 const isSettingWindow = atom({ plugin: 'tokenomics', key: 'isSettingWindow' } as const, false)
 
-/** Paints the cat's next frame and asks for the one after it, at the pace its speed calls for. */
+/** Paints Clawd's next frame and asks for the one after it, at the pace its speed calls for. */
 const stepCat = async ($: Dollar): Promise<void> => {
   catTimer = null
-  // Reduced motion: the cat stands where it is. (A picture for each state is still drawn, with the band.)
+  // Reduced motion: Clawd stands where it is. (A picture for each state is still drawn, with the band.)
   if (catSite === null || catFacts.isMotionReduced) return
   const view = catView(catFacts, catState())
   catShown = catCells(view.look)
   catShownPng = catPng(view.look)
-  // The words beside the cat follow what it is doing: a change of state, not of frame, draws the band again.
+  // The words beside Clawd follow what it is doing: a change of state, not of frame, draws the band again.
   if (view.phrase !== catPhrase) {
     catPhrase = view.phrase
     $.ui.invalidate('ui.render')
@@ -199,10 +213,10 @@ const stepCat = async ($: Dollar): Promise<void> => {
       catDemo = null
       catSteps = 0
     }
-  } else {
+  } else if (catIdleMs !== null) {
     catIdleMs += view.periodMs
   }
-  // A cat curled up for the night needs no timer: the person's next word wakes it.
+  // Clawd curled up for the night needs no timer: the person's next word wakes it.
   if (view.isResting && catJumpLeft === 0 && catDemo === null) return
   catDueMs = view.periodMs
   catTimer = $.clock.after(view.periodMs, () => void stepCat($))
@@ -214,14 +228,14 @@ const startCat = ($: Dollar, afterMs: number): void => {
   catTimer = $.clock.after(afterMs, () => void stepCat($))
 }
 
-/** The terminal draws no pictures: the cat goes back to cells, and the band is drawn again to say so. */
+/** The terminal draws no pictures: Clawd goes back to cells, and the band is drawn again to say so. */
 const giveUpImages = ($: Dollar): void => {
   catImages = 'no'
   catAsImage = false
   $.ui.invalidate('ui.render')
 }
 
-/** Asks the terminal once, with the picture on screen, whether it draws it; a cat curled up has no timer to ask for it. */
+/** Asks the terminal once, with the picture on screen, whether it draws it; Clawd, curled up, has no timer to ask for it. */
 const probeImage = async ($: Dollar): Promise<void> => {
   imageProbe = null
   if (catSite === null || !catAsImage || catImages !== 'maybe') return
@@ -249,7 +263,7 @@ const imagesLikely = async ($: Dollar): Promise<boolean> => {
   return program === 'ghostty' || program === 'kitty'
 }
 
-/** A cat that has just been asked to go faster should not wait out a slow frame: the pending one is brought forward. */
+/** Clawd, just asked to go faster, should not wait out a slow frame: the pending one is brought forward. */
 const hurryCat = ($: Dollar, f: Facts): void => {
   if (catTimer === null || catView(f, catState()).periodMs >= catDueMs) return
   catTimer.cancel()
@@ -257,13 +271,13 @@ const hurryCat = ($: Dollar, f: Facts): void => {
   startCat($, 1)
 }
 
-/** The person did something: the cat is awake. */
+/** The person did something: Clawd is awake. */
 const nudgeCat = ($: Dollar): void => {
   catIdleMs = 0
   startCat($, 1)
 }
 
-/** Lighter at last: the cat jumps for joy. */
+/** Lighter at last: Clawd jumps for joy. */
 const jumpCat = ($: Dollar): void => {
   if (catFacts.isMotionReduced) return
   catJumpLeft = JUMP_STEPS
@@ -293,12 +307,12 @@ const stopCat = (): void => {
   catSite = null
 }
 
-/** A session begins (or the module was loaded again): the cat starts over, curled up. */
+/** A session begins (or the module was loaded again): Clawd starts over, curled up. */
 const resetCat = (): void => {
   stopCat()
   catFacts = initialFacts
   catSteps = 0
-  catIdleMs = 0
+  catIdleMs = null
   catJumpLeft = 0
   catDemo = null
   catDemoLeftMs = 0
@@ -338,7 +352,7 @@ const closeOffer = async ($: Dollar): Promise<OpenOffer | null> => {
   return open
 }
 
-/** The one-line suggestion in the cat's card is for the moment after a reply; it goes when that moment has passed. */
+/** The one-line suggestion in the band's card is for the moment after a reply; it goes when that moment has passed. */
 const clearNudge = async ($: Dollar): Promise<void> => {
   if ((await read($, nudge)) === null) return
   await update($, nudge, () => null)
@@ -411,7 +425,9 @@ const isAnalysisUp = async ($: Dollar): Promise<boolean> => {
 /**
  * While the analysis pane is up, its list of what is heavy is made again after every reply, not only once a minute. Nothing here is
  * waited for: the breakdown is a local estimate that sends nothing, but the end of a reply does not hang on how long it takes. It runs
- * once the hook has returned, which also lets it see the reply that has just ended. One at a time, and none for a pane that is shut.
+ * once the hook has returned. That does not make the count whole: measured live, the breakdown at a reply's end still lacked part of
+ * that reply (about a third of a 400-line one) and took it in at the next reply's refresh; waiting 400 ms instead of 1 changed nothing,
+ * and why is not known. One at a time, and none for a pane that is shut.
  */
 const refreshHeavyLater = ($: Dollar): void => {
   if (isHeavyPending) return
@@ -463,6 +479,8 @@ const refreshSettings = async ($: Dollar): Promise<void> => {
  */
 const showPane = async ($: Dollar, id: typeof PANE | typeof SETTINGS_PANE) => {
   await $.ui.close({ id: id === PANE ? SETTINGS_PANE : PANE })
+  // The auto-compact slider starts on the recommended size each time the settings pane is opened, not where it was left.
+  if (id === SETTINGS_PANE) await update($, windowPick, () => null)
   const opened = await $.ui.open({ id, title: id === PANE ? '分析' : '設定' })
   await refreshUsage($, true)
   await refreshSettings($)
@@ -621,6 +639,7 @@ const compact = async ($: Dollar): Promise<void> => {
       $.ui.toast(say('heavy', 'いまは要約できませんでした。'))
     } else {
       await change($, f => applyCompacted(f, done.tokensAfter))
+      newWindow(sv)
       await clearNudge($)
       const sizes =
         done.tokensBefore !== undefined && done.tokensAfter !== undefined
@@ -721,35 +740,6 @@ const setWindow = async ($: Dollar, tokens: number, source: WindowSource): Promi
 const resetWindow = async ($: Dollar): Promise<void> => {
   const view = windowView(await read($, facts))
   if (view !== null) await setWindow($, view.standard, 'pane')
-}
-
-/** Registers the light helper; there is no unregistering, so `agent.offer` decides whether the model hears of it. */
-const registerWorker = async ($: Dollar): Promise<boolean> => {
-  try {
-    await $.agent.register({
-      name: WORKER,
-      description: WORKER_DESCRIPTION,
-      prompt: WORKER_PROMPT,
-      tools: WORKER_TOOLS,
-      model: 'haiku',
-      effort: 'low',
-      // Not the parent's: in an auto or bypass session the helper would otherwise run any command unasked.
-      permissionMode: 'default',
-      omitClaudeMd: true,
-    })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const turnOnWorker = async ($: Dollar): Promise<void> => {
-  if (!(await registerWorker($))) {
-    $.ui.toast(say('heavy', '軽量エージェントを用意できませんでした。'))
-    return
-  }
-  await update($, modes, m => ({ ...m, isWorkerOn: true }))
-  $.ui.toast(say('good', '軽量エージェントを使えるようにしました。調べものを軽いモデルに任せます。'))
 }
 
 const setEffort = async ($: Dollar, cap: EffortSetting | null): Promise<void> => {
@@ -880,9 +870,6 @@ const carryOut = async ($: Dollar, offer: Offer): Promise<void> => {
     case 'boundary':
       await startFresh($)
       return
-    case 'worker':
-      await turnOnWorker($)
-      return
     case 'model':
       if (offer.target !== undefined) await switchModel($, offer.target)
       return
@@ -899,7 +886,6 @@ const carryOut = async ($: Dollar, offer: Offer): Promise<void> => {
 const stopSaving = async ($: Dollar, key: SavingKey): Promise<void> => {
   if (key === 'effort') return setEffort($, null)
   if (key === 'model') return restoreModel($)
-  if (key === 'worker') await update($, modes, m => ({ ...m, isWorkerOn: false }))
   if (key === 'handoff') await update($, modes, m => ({ ...m, isHandoffOn: false }))
   $.ui.toast(say('good', 'やめました。'))
 }
@@ -1022,7 +1008,7 @@ const targetOf = (input: unknown): string | undefined => {
 }
 
 // ── The savings layer ──────────────────────────────────────────────────────────────────────────────
-// It works from hooks alone, so it is as much at home in `claude -p` as in a terminal; the cat above does not come into it.
+// It works from hooks alone, so it is as much at home in `claude -p` as in a terminal; Clawd above does not come into it.
 // What it decides is in lib/core (pure, and tested apart); what is here is only the asking of `$` and the doing. It is
 // in this file because the checker follows `$` only into functions declared in the file it is passed in, and because a
 // module may hook an event once: the hooks below call these.
@@ -1033,11 +1019,12 @@ const PERSON_KEY = 'personId'
 const FLUSH_MS = 3_000
 const FLUSH_AT = 20
 
-const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 }
+const emptySavings: Savings = { digests: 0, tokens: 0, milliUsd: 0, wouldFire: 0, recovered: 0, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 }
 const savings = atom({ plugin: 'tokenomics', key: 'savings' } as const, emptySavings)
-/** Tokens the output digest has kept out of the conversation today, as the band says them (see `svShow`). */
-let savedToday = 0
-let keptToday = 0
+/** The same for the session only (this process, since it began or was last cleared): the figure the band says, and the pane beside the day's. */
+const sessionSavings = atom({ plugin: 'tokenomics', key: 'sessionSavings' } as const, emptySavings)
+/** Everything the savings layer has kept out in this session, added up as the band says it (see `svShow`). */
+let savedHere = 0
 
 const sv = freshState(parseOptions(undefined))
 let svReady: Promise<void> | null = null
@@ -1054,7 +1041,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.6.6'
+const MOD_VERSION = '0.7.2'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1080,20 +1067,28 @@ const svInit = async ($: Dollar): Promise<void> => {
 /** A reload never sees `session.start`, so whatever needs the session asks for it here, once. */
 const svEnsure = ($: Dollar): Promise<void> => (svReady ??= svInit($))
 
-/** Shows today's figures to whoever reads them (the pane), when they have changed. */
+/** A person held back from the savings (to be compared with the rest) is not shown an estimate of them either. */
+const heldBack = (s: Savings): Savings => ({ ...s, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0, subCuts: 0, subTokens: 0, flowReqs: 0, flowTokens: 0, flowKeptTokens: 0, flowMicroUsd: 0 })
+
+const isSame = (a: Savings, b: Savings): boolean => (Object.keys(a) as (keyof Savings)[]).every(k => a[k] === b[k])
+
+/** Shows today's figures, and the session's, to whoever reads them (the pane, the band), when they have changed. */
 const svShow = async ($: Dollar): Promise<void> => {
-  const today = savingsToday(sv.ledger, await $.clock.now())
-  // A person held back from the savings (to be compared with the rest) is not shown an estimate of them either.
-  const next: Savings = sv.arm === 'control' ? { ...today, forks: 0, keptTokens: 0, keptMilliUsd: 0, forkReaders: 0, forkRereads: 0, forkCostMilliUsd: 0, forkLosses: 0 } : today
-  const now = await read($, savings)
-  if ((Object.keys(next) as (keyof Savings)[]).some(k => now[k] !== next[k])) {
-    await update($, savings, () => next)
-  }
-  // The band says the saved tokens too, and only they redraw it: the pane's other figures change more often, and
-  // nothing else redraws the band when the ledger is written. Kept apart from the atom for that reason.
-  if (next.tokens !== savedToday || next.keptTokens !== keptToday) {
-    savedToday = next.tokens
-    keptToday = next.keptTokens
+  const now = await $.clock.now()
+  const control = sv.arm === 'control'
+  const today = savingsToday(sv.ledger, now)
+  const here = savingsToday(sv.mine, now, MAX_DAYS)
+  const next = control ? heldBack(today) : today
+  const nextHere = control ? heldBack(here) : here
+  if (!isSame(await read($, savings), next)) await update($, savings, () => next)
+  const hereWas = await read($, sessionSavings)
+  if (!isSame(hereWas, nextHere)) await update($, sessionSavings, () => nextHere)
+  // The band says the saved tokens too, all kinds added up in one figure for the session, and only it redraws the band: the pane's
+  // other figures change more often, and nothing else redraws the band when the ledger is written. Kept apart from the atom for that reason.
+  // Added up from `nextHere`, so a person held back from the savings is shown none of it.
+  const all = savedAll(nextHere)
+  if (all.tokens !== savedHere) {
+    savedHere = all.tokens
     $.ui.invalidate('ui.render')
   }
 }
@@ -1157,6 +1152,7 @@ const svRecord = async (
     }
     sv.pending.push(raw)
     sv.ledger = appendRaw(sv.ledger, raw)
+    sv.mine = appendRaw(sv.mine, raw)
     if (sv.pending.length >= FLUSH_AT) await svFlush($)
     else svSchedule($)
   } catch {
@@ -1276,6 +1272,29 @@ const svPrompted = ($: Dollar, text: string): Promise<void> =>
     undefined,
   )
 
+/** What came out of the conversation is remembered, to be counted at every request that follows (`svFlow`). */
+const keepOut = (id: string, item: KeptItem): void => {
+  if (item.tokens <= 0) return
+  sv.kept.set(id, item)
+  sv.keptFresh += item.tokens
+}
+
+/**
+ * One request of the main loop was answered: what the items kept out of the conversation spared it is written down, and the band
+ * and the pane follow at once. `items` and `fresh` are what stood when the request began (a call that came out during it was
+ * not in its prompt, and would not have been in the conversation's).
+ */
+const svFlow = async ($: Dollar, items: readonly KeptItem[], fresh: number, model: string): Promise<void> => {
+  if (items.length === 0) return
+  try {
+    const flow = requestFlow(items, fresh, model)
+    await svRecord($, 'A1', 'auto', 'signal', 'flow', { flowTokens: flow.digestTokens, flowKeptTokens: flow.delegationTokens, flowMicroUsd: flow.microUsd }, true)
+    await svShow($)
+  } catch {
+    // Only a figure to look at.
+  }
+}
+
 /**
  * A subagent's run, once it has ended and its kind is known: what it spent, whether it read files, and, for a skill or agent of
  * this plugin, what it kept out of the conversation. A kind is known when the subagent was spawned as one, or, for a skill's
@@ -1311,6 +1330,8 @@ const svSettle = async ($: Dollar, id: string): Promise<void> => {
     true,
   )
   if (kept.isLoss) await svRecord($, 'B1', m, 'outcome', `lost_${type ?? kept.name}`, undefined, true)
+  // Kept out of the window it ended in; a run settled after a /clear or a compaction kept nothing out of the new one.
+  if (run.ended.epoch === sv.epoch) keepOut(`k:${id}`, { tokens: kept.keptTokens, kind: 'delegation' })
 }
 
 /** Every run that ended and was never named is settled as it is. */
@@ -1362,7 +1383,7 @@ const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | u
           const used = subagentSpend(usage)
           await svRecord($, 'S', 'observe', 'signal', used.tag, used.n, true)
         }
-        sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex, microUsd }))
+        sv.forks = forkSet(sv.forks, agentId, forkEnded(sv.forks.get(agentId), { reportTokens: estimateTokens(answer), spent, isReader, turn: sv.turnIndex, microUsd, epoch: sv.epoch }))
         // Named already (spawned as a kind): settled now. A skill's fork is named when the Skill call returns, which is after this.
         if (sv.spawns.has(agentId)) await svAttempt($, 'B1', () => svSettle($, agentId), undefined)
         return
@@ -1401,7 +1422,7 @@ const svTurnDone = ($: Dollar, agentId: string | undefined, usage: TurnUsage | u
     undefined,
   )
 
-/** A suggestion in two lengths: `long` as a row of its own after the reply (where there is no card), `short` for the cat's card. */
+/** A suggestion in two lengths: `long` as a row of its own after the reply (where there is no card), `short` for the band's card. */
 type NudgeText = { long: string; short: string }
 
 /**
@@ -1481,6 +1502,81 @@ const svExport = async ($: Dollar): Promise<string> => {
   if (isCopied) lines.push('クリップボードにコピーしました。そのまま貼り付けて送れます。')
   if (!isCopied && where === '') lines.push('コピーも保存もできなかったので、下に出します（このあと /clear すると、モデルの文脈からも消えます）。', json)
   return lines.join('\n')
+}
+
+/** One more call of the request being answered, by what became of it (the main conversation only). A call can arrive before its request is answered: the shape is opened when the request begins (`turn.step`). */
+const tallyCall = (what: 'readOnly' | 'refused'): void => {
+  const last = stepShapes[stepShapes.length - 1]
+  if (last !== undefined) last[what] += 1
+}
+
+/**
+ * A turn of the main conversation, by the shape of its requests: how many, how often the model already asks for several reads at
+ * once, and how many reads came one request at a time right after another read (an upper bound: the plugin cannot see whether the
+ * second depended on the first). Counts and sums only, one event for the turn; a turn that was cut off is counted as far as it went.
+ */
+const svShape = async ($: Dollar, steps: readonly StepShape[]): Promise<void> => {
+  try {
+    const n = requestShape(steps)
+    if (n === null) return
+    await svRecord($, 'S', 'observe', 'signal', 'request_shape', n, true)
+    await svBatchTurn($, n)
+  } catch {
+    // For looking back at; the turn goes on.
+  }
+}
+
+/**
+ * B7: whether this render of the system prompt carries the sentence asking for reads that do not depend on each other to be put into
+ * one response. In `auto`, half of the sessions do (`batchGroupOf`) and the other half are left without it, to be compared with; in
+ * `observe` none does, and the ledger says it would have. The session's half is written once, not at every render; a one-line prompt
+ * (`bare`) takes no section and is no part of the comparison.
+ */
+const svBatch = ($: Dollar, traits: readonly string[]): Promise<boolean> =>
+  svAttempt(
+    $,
+    'B7',
+    async () => {
+      await svEnsure($)
+      const m = modeFor('B7')
+      if (m === 'off' || traits.includes('bare')) return false
+      if (m !== 'auto') {
+        if (!sv.isBatchNoted) {
+          sv.isBatchNoted = true
+          await svRecord($, 'B7', m, 'would', 'session')
+        }
+        return false
+      }
+      sv.batchGroup ??= batchGroupOf(sv.sid)
+      if (!sv.isBatchNoted) {
+        sv.isBatchNoted = true
+        await svRecord($, 'B7', m, sv.batchGroup === 'on' ? 'fired' : 'signal', `session_${sv.batchGroup}`)
+      }
+      return sv.batchGroup === 'on'
+    },
+    false,
+  )
+
+/** B7: a turn's figures under its session's half, so the sessions given the sentence can be set against those left without it. */
+const svBatchTurn = async ($: Dollar, n: Record<string, number>): Promise<void> => {
+  const g = sv.batchGroup
+  if (g === null || modeFor('B7') !== 'auto') return
+  await svRecord(
+    $,
+    'B7',
+    'auto',
+    'signal',
+    `turns_${g}`,
+    {
+      [`reqs_${g}`]: n.shpReqs ?? 0,
+      [`calls_${g}`]: n.shpCalls ?? 0,
+      [`serial_${g}`]: n.shpSerial ?? 0,
+      [`serialTok_${g}`]: n.shpSerialTok ?? 0,
+      [`parallel_${g}`]: n.shpParallel ?? 0,
+      [`prompt_${g}`]: n.shpPromptTok ?? 0,
+    },
+    true,
+  )
 }
 
 /**
@@ -1592,6 +1688,8 @@ const svWatchCall = async ($: Dollar, tool: string, input: Record<string, unknow
       for (const [id, d] of sv.digests) {
         if (d.command === command && sv.turnIndex - d.turn <= 2) {
           sv.digests.delete(id)
+          // The output is in the conversation again, so it spares the requests that follow nothing more.
+          sv.kept.delete(`d:${id}`)
           await svRecord($, 'A1', m, 'outcome', 'rerun')
         }
       }
@@ -1600,6 +1698,7 @@ const svWatchCall = async ($: Dollar, tool: string, input: Record<string, unknow
     if (tool === 'Read' && typeof input.file_path === 'string' && sv.saveDir !== '' && isInsideDir(sv.saveDir, input.file_path)) {
       if (isDigestFile(input.file_path) && !sv.readBack.has(input.file_path)) {
         sv.readBack.add(input.file_path)
+        for (const id of sv.kept.keys()) if (id.startsWith('d:') && digestPath(sv.saveDir, id.slice(2)) === input.file_path) sv.kept.delete(id)
         await svRecord($, 'A1', m, 'outcome', 'readback')
       }
     }
@@ -1685,6 +1784,8 @@ const svDigestBash = async (
   await $.fs.write(path, out)
   sv.digests.set(toolUseId, { command: shortHash(normalizeCommand(command)), turn: sv.turnIndex })
   await svRecord($, 'A1', 'auto', 'fired', undefined, n)
+  // Out of the conversation from here on: every request that follows is spared it, until a /clear or a compaction.
+  keepOut(`d:${toolUseId}`, { tokens: savedTokens, kind: 'digest' })
   return { ...ran, result: { ...result, stdout: cut.text }, text: cut.text } as typeof ran
 }
 
@@ -1708,8 +1809,6 @@ export const register: Register = (on, options) => {
     // A model this mod moved in an earlier session whose end was cut short: put it back.
     const back = await restorePending($)
     if (back !== null) $.ui.toast(say('good', `前回切り替えたモデルを ${back} に戻しました。`))
-    // A reload forgets the registration but not the switch: put the helper back if it is on.
-    if ((await read($, modes)).isWorkerOn) await registerWorker($)
     await refreshUsage($, true)
     await refreshSettings($)
     await svStarted($, e.isInteractive)
@@ -1741,7 +1840,7 @@ export const register: Register = (on, options) => {
       sv.demoNudge = true
       return {
         text: isHud
-          ? '次の返信のあと、猫のカードの一言（「小走りです」などが出ている所）に、提案の表示テストが出ます。'
+          ? '次の返信のあと、帯のカードの一言（「小走りです」などが出ている所）に、提案の表示テストが出ます。'
           : '次の返信のあとに、提案の表示テストが一行出ます。',
       }
     }
@@ -1752,7 +1851,7 @@ export const register: Register = (on, options) => {
     // Too narrow to seat a pane: say the same thing as text.
     const ctx = await offerContext($)
     if (isSettings) return { text: settingsReport(ctx.facts, activeSavings(ctx.modes, isNoteByDefault()), await read($, muted)) }
-    return { text: report(ctx.facts, computeAdvice(ctx.facts), standingOffers(ctx, await read($, muted)), await read($, savings)) }
+    return { text: report(ctx.facts, computeAdvice(ctx.facts), standingOffers(ctx, await read($, muted)), await read($, savings), await read($, sessionSavings)) }
   }).catch(($, e, next) =>
     next.called ? next(e) : { text: `${$.plugin.name}: うまく開けませんでした。もう一度お試しください。` },
   )
@@ -1761,6 +1860,7 @@ export const register: Register = (on, options) => {
     isTurnRunning = true
     toolsThisTurn = 0
     requestsThisTurn = []
+    stepShapes = []
     sv.steer = steerTurn(sv.steer)
     nudgeCat($)
 
@@ -1786,13 +1886,17 @@ export const register: Register = (on, options) => {
       }
     } else {
       isTurnRunning = false
+      // Whatever the turn's end: an interrupted turn or one an API error ended carries no usage, but the requests it made were made.
+      const shapes = stepShapes
+      stepShapes = []
+      await svShape($, shapes)
       if (e.usage !== undefined) {
         const requests = requestsThisTurn
         const turn = turnTokens(e.usage, requests.map(r => r.input + r.cacheWrite + r.cacheRead))
         requestsThisTurn = []
         const now = await $.clock.now()
         await change($, f => applyTurn(f, turn, now, toolsThisTurn, e.answer.length, isSentInTurn, requests))
-        // The first response measures what an empty session holds, which the cat's speed is counted from. The size the engine
+        // The first response measures what an empty session holds, which Clawd's speed is counted from. The size the engine
         // auto-compacts at, which the gauge counts against, can change under us (/autocompact, a model switch): read again now and then.
         if ((await read($, facts)).baselineTokens === null || now - breakdownAt >= BREAKDOWN_EVERY_MS) await refreshUsage($, true)
         else refreshHeavyLater($)
@@ -1805,7 +1909,7 @@ export const register: Register = (on, options) => {
     // A one-line suggestion (the reply itself is left as it is). Only a reply that ended in an answer.
     const line = e.agentId === undefined && e.reason === 'answer' ? await svNudge($, e.usage) : undefined
     if (line === undefined) return done
-    // With the cat on it stands in the cat's card, in place of the phrase; with it off there is no card, and it is a row after the reply.
+    // With Clawd on it stands in the band's card, in place of the phrase; with it off there is no card, and it is a row after the reply.
     if (!isHud) return { ...done, text: line.long }
     await update($, nudge, () => line.short)
     $.ui.invalidate('ui.render')
@@ -1823,6 +1927,7 @@ export const register: Register = (on, options) => {
         isSentInTurn = false
         toolsThisTurn = 0
         requestsThisTurn = []
+        stepShapes = []
         await change($, f => applyPrompt(f, now, THRESHOLDS.idleMs, THRESHOLDS.coldCacheContextTokens, e.text.length))
         // The person has gone on: a suggestion left on screen is for a moment that has passed.
         await closeOffer($)
@@ -1841,13 +1946,18 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     // Before anything is counted or run: a call turned back is neither.
     const note = await svSteer($, String(e.tool), e as unknown as Record<string, unknown>, e.agentId)
-    if (note !== undefined) return { deny: note }
+    if (note !== undefined) {
+      if (e.agentId === undefined) tallyCall('refused')
+      return { deny: note }
+    }
     try {
       await svWatchCall($, String(e.tool), e as unknown as Record<string, unknown>, e.agentId)
     } catch {
       // Only a note of what the call touches; the call goes ahead. (Not through the breaker: its successes would hide the digest's failures.)
     }
     const raw = await next(e)
+    // The engine's own word on whether the call only read (a refused one, or one a hook answered, never says so).
+    if (e.agentId === undefined && raw.deny === undefined && raw.isReadOnly === true) tallyCall('readOnly')
     await svLaunched($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
     await svNoteOpened($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
     await svForkStarted($, String(e.tool), e as unknown as Record<string, unknown>, raw, e.agentId)
@@ -1913,6 +2023,8 @@ export const register: Register = (on, options) => {
     // A `precompute` installs nothing: the window has not shrunk. Only a compaction the person typed counts as their answer.
     if (e.agentId === undefined && done.skip === undefined && e.trigger !== 'precompute') {
       await change($, f => applyCompacted(f, done.tokensAfter))
+      // What was kept out of the old window spares the requests of the summary nothing more.
+      newWindow(sv)
       await clearNudge($)
       jumpCat($)
       if (e.trigger === 'manual') await svAttempt($, 'C2', () => svAnswered($), undefined)
@@ -1923,7 +2035,7 @@ export const register: Register = (on, options) => {
 
   // The cap on how hard turns think, once the person has accepted one. Only the main conversation's own
   // steps, and only ever lowering. The effort it asks for is noted, so a suggestion knows what it would lower.
-  // The person turns "Reduce motion" on or off in /config: the cat stops, or sets off again.
+  // The person turns "Reduce motion" on or off in /config: Clawd stops, or sets off again.
   on('config.set', { key: 'reduceMotion' }, async ($, e, next) => {
     const done = await next(e)
     if (done.deny === undefined) {
@@ -1945,7 +2057,25 @@ export const register: Register = (on, options) => {
     }
     const effort = cappedEffort(e.effort, cap)
 
-    const step = yield* next(effort === undefined ? e : { ...e, effort })
+    // The engine starts a tool call while the response is still coming in: the call can arrive, and even end, before this step is
+    // answered. So the request's shape is opened now and its calls are counted into it as they come (the next request begins only
+    // after every call of this one has ended, so the last shape is always the request whose calls these are).
+    const shape: StepShape | null = e.agentId === undefined ? { prompt: 0, asked: 0, readOnly: 0, refused: 0, readPath: null } : null
+    if (shape !== null) stepShapes.push(shape)
+    // What has been kept out of the conversation so far is what this request is spared; the calls it makes are for the next.
+    const spared = e.agentId === undefined ? [...sv.kept.values()] : []
+    const sparedFresh = sv.keptFresh
+    const sparedIn = sv.epoch
+    if (e.agentId === undefined) sv.keptFresh = 0
+    let step: TurnStepResult | undefined
+    try {
+      step = yield* next(effort === undefined ? e : { ...e, effort })
+    } finally {
+      // A request that was never answered is no request.
+      if (shape !== null && step?.usage == null) stepShapes = stepShapes.filter(s => s !== shape)
+      // ...and so it wrote nothing to the cache: what was new for it is new for the next.
+      if (e.agentId === undefined && step?.usage == null && sparedIn === sv.epoch) sv.keptFresh += sparedFresh
+    }
     // One request answered: the main loop's turn counts it, with the size of the prompt it sent.
     if (e.agentId === undefined && step?.usage != null) {
       requestsThisTurn.push({
@@ -1955,9 +2085,17 @@ export const register: Register = (on, options) => {
         output: step.usage.output_tokens,
         isAdvisor: Array.isArray(step.serverToolUses) && step.serverToolUses.some(u => u.name === 'advisor'),
       })
+      if (shape !== null) {
+        shape.prompt = step.usage.input_tokens + step.usage.cache_creation_input_tokens + step.usage.cache_read_input_tokens
+        shape.asked = step.toolUses.length
+        shape.readPath = readPathOf(step.toolUses)
+      }
       // The band and the pane follow the turn as it goes, not only when it ends (the engine measures once a turn).
       const requests = requestsThisTurn
       await change($, f => applyRequest(f, requests, e.model))
+      // The request wrote or read the prompt cache, which starts its life over.
+      nudgeCat($)
+      if (sparedIn === sv.epoch) await svFlow($, spared, sparedFresh, e.model)
     }
     await svStepped($, e.agentId, step)
 
@@ -1965,6 +2103,15 @@ export const register: Register = (on, options) => {
   }).catch(async function* ($, e, next) {
     return yield* next(e)
   })
+
+  // B7: one sentence at the end of the system prompt, in half of the sessions (lib/core/batch). Added after the cache boundary, and the
+  // same at every render of a session, so it costs the cache nothing.
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    if (!(await svBatch($, e.traits))) return composed
+
+    return { sections: [...composed.sections, BATCH_SECTION] }
+  }).catch(($, e, next) => next(e))
 
   // The light agents the plugin ships (agents/) are heard of by the model only while delegation is `auto`: until then they would
   // be offered with no measurement behind them, and a file-defined agent cannot pin its permission mode, so it takes its parent's.
@@ -1974,13 +2121,6 @@ export const register: Register = (on, options) => {
 
     return modeFor('B1') === 'auto' ? next(e) : { isOffered: false }
   }).catch(($, e, next) => next(e))
-
-  // The light helper is registered when the person accepts it, and the model hears of it only while it stays on.
-  on('agent.offer', { agent: 'tokenomics:light-worker' }, async ($, e, next) => {
-    if (!(await read($, modes)).isWorkerOn) return { isOffered: false }
-
-    return next(e)
-  }).catch(() => ({ isOffered: false }))
 
   // B2: a subagent of a listed kind thinks less.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
@@ -2121,6 +2261,10 @@ export const register: Register = (on, options) => {
 
     const f = await read($, facts)
     catFacts = f
+    // A reload of the mod in a running session starts Clawd over, but the cache did not: its age is told by the turn that last ended.
+    if (catIdleMs === null && (f.isLastRunning === true || f.endedAt !== null)) {
+      catIdleMs = f.isLastRunning === true || f.endedAt === null ? 0 : Math.max(0, (await $.clock.now()) - f.endedAt)
+    }
     const open = await read($, openOffer)
     const card = open?.view === 'card' ? ((await offerFor($, open.id)) ?? null) : null
 
@@ -2155,8 +2299,7 @@ export const register: Register = (on, options) => {
       facts: f,
       advice: nextAdvice(f, [...(await read($, dismissed)), ...(modeFor('C3') === 'suggest' ? ['cache-lapse'] : [])]),
       nudge: await read($, nudge),
-      savedTokens: savedToday,
-      keptTokens: keptToday,
+      savedTokens: savedHere,
       offer: card,
       tag: tagOf(await read($, modes)),
       isCompacting: (await read($, busy)) === 'compact',
@@ -2209,6 +2352,7 @@ export const register: Register = (on, options) => {
       advice: computeAdvice(ctx.facts),
       offers: standingOffers(ctx, await read($, muted)),
       savings: await read($, savings),
+      sessionSavings: await read($, sessionSavings),
       heavy: await read($, heavy),
       isCompacting: (await read($, busy)) === 'compact',
       rows: e.viewport?.rows ?? 24,
