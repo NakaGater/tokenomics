@@ -12,11 +12,13 @@ for mod in mods/*/; do
 done
 
 echo "== bench harness (stubbed: no model is called)"
-BENCH_CLAUDE="$PWD/bench/stub-claude.sh" scripts/bench.sh bench/tasks/fix-failing-test 2 haiku > /dev/null
+# The stubbed runs write to a folder of their own, removed after: real results in bench/results are left alone.
+bench_out="$(mktemp -d)"
+trap 'rm -rf "$bench_out"' EXIT
+BENCH_RESULTS="$bench_out" BENCH_CLAUDE="$PWD/bench/stub-claude.sh" scripts/bench.sh bench/tasks/fix-failing-test 2 haiku > /dev/null
 # A run that prints nothing has no numbers: it is counted as no_data and shown as "-", never as a blank or a 0.
-silent="$(BENCH_CLAUDE=true scripts/bench.sh bench/tasks/fix-failing-test 1 haiku)"
+silent="$(BENCH_RESULTS="$bench_out" BENCH_CLAUDE=true scripts/bench.sh bench/tasks/fix-failing-test 1 haiku)"
 echo "$silent" | grep -Eq '^off +1 +0 +1 +- +- +-$' || { echo "bench.sh: a run with no output is not shown as no_data" >&2; exit 1; }
-rm -rf bench/results
 
 echo "== pilot report (on sample exports)"
 report="$(scripts/ledger-report.sh scripts/testdata/ledger-sample-a.json scripts/testdata/ledger-sample-b.json)"

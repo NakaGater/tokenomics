@@ -1,6 +1,6 @@
 {
   "name": "tokenomics",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "Shows how much of the context a session has used, says what to do about it at the moment it helps, and quietly keeps big outputs and lighter subagents from costing more than they should.",
   "author": { "name": "NakaGater" },
   "types": "./types/index.d.ts",
@@ -61,7 +61,7 @@
     "cacheTtlMinutes": {
       "type": "number",
       "title": "キャッシュの寿命（分）",
-      "description": "0 なら自動（API キーは 5 分、サブスクリプションは 60 分）。空き時間がこれを超えると、キャッシュが切れたとみなします。",
+      "description": "0 なら自動（API キーは 5 分、サブスクリプションは 60 分）。空き時間がこれを超えると、キャッシュが切れたとみなします（Clawd はこのとき眠ります）。0〜120 に丸めます。",
       "default": 0
     }
   }

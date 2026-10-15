@@ -8,13 +8,13 @@ import { type Calls, SURFACES, bandProps, engine, paneProps, runStep, savedIn, s
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 
 describe('which subagents are the plugin’s own', () => {
-  test('its skills’ forks and its agents, not the engine’s, a person’s or its general worker', () => {
+  test('its skills’ forks and its agents, not the engine’s or a person’s', () => {
     expect(ownName(forkType('scout'))).toBe('scout')
     expect(ownName('fork_test-summary')).toBe('test-summary')
     expect(ownName('fork_log-digest')).toBe('log-digest')
     expect(ownName('tokenomics:scout')).toBe('scout')
     expect(ownName('tokenomics:test-runner')).toBe('test-runner')
-    for (const other of ['fork_deploy', 'fork_', 'Explore', 'general-purpose', 'custom', 'plugin', 'tokenomics:light-worker', 'scout', 'other:scout']) {
+    for (const other of ['fork_deploy', 'fork_', 'Explore', 'general-purpose', 'custom', 'plugin', 'scout', 'other:scout']) {
       expect(ownName(other)).toBeNull()
     }
   })

@@ -48,7 +48,7 @@ export const forkType = (skill: string): string => `fork_${skill}`
 
 /**
  * The skill or agent of this plugin a subagent kind stands for (`fork_scout`, `tokenomics:test-runner`), or null for any other:
- * the engine's own agents, a person's, and this plugin's general worker, which does more than look.
+ * the engine's own agents and a person's.
  */
 export const ownName = (type: string): string | null => {
   if (type.startsWith('fork_')) {

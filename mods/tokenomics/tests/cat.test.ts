@@ -11,16 +11,12 @@ import { initialModes } from '../hooks/lib/modes'
 import { computeOffers, pruneSeen } from '../hooks/lib/offers'
 import { gaugeGrid } from '../hooks/lib/gauge'
 import {
+  DEFAULT_CACHE_TTL_MS,
   FAST_PERIOD_MS,
-  IDLE_SLEEP_MS,
   JUMP_STEPS,
   SLOW_PERIOD_MS,
-  WAKE_TOKENS,
   catView,
-  fullTokensOf,
-  growthOf,
   initialCat,
-  isAsleep,
   isSweating,
   periodOf,
   speedOf,
@@ -28,7 +24,7 @@ import {
 } from '../hooks/lib/pace'
 import { QUADRANTS, TERMINAL_DEFAULT, packCells } from '../hooks/lib/raster'
 
-import { answer, bandProps, decodeCells, engine, settingsPaneProps } from './kit'
+import { answer, bandProps, decodeCells, engine, runStep, settingsPaneProps } from './kit'
 
 const BASELINE = 27_000
 
@@ -43,34 +39,40 @@ const grown = (tokens: number, over: Partial<Facts> = {}, window = 1_000_000): F
 })
 
 describe('pace', () => {
-  test('the cat counts what the conversation has added to an empty session, not the 27k every session starts with', () => {
-    expect(growthOf(grown(0))).toBe(0)
-    expect(growthOf(grown(50_000))).toBe(50_000)
-    // Before a response has measured anything the cat sleeps; before the baseline is known a typical one is assumed.
-    expect(growthOf({ ...initialFacts })).toBe(0)
-    expect(growthOf({ ...initialFacts, contextTokens: 45_000 })).toBe(20_000)
-    expect(growthOf(grown(0, { contextTokens: 10 }))).toBe(0)
-  })
+  test('Clawd strolls until the conversation has grown a little, then runs faster the larger it gets, to its fastest where it starts to sweat', () => {
+    // Nothing known, or nothing added to an empty session: the slowest stroll.
+    expect(speedOf({ ...initialFacts })).toBe(0)
+    expect(speedOf(grown(0))).toBe(0)
 
-  test('it sleeps until the conversation has grown a little, then runs faster the larger it gets, to a sprint at 200k', () => {
-    expect(isAsleep(grown(WAKE_TOKENS - 1))).toBe(true)
-    expect(isAsleep(grown(WAKE_TOKENS))).toBe(false)
-
-    const speeds = [20_000, 50_000, 100_000, 150_000, 200_000, 400_000].map(n => speedOf(grown(n)))
+    const speeds = [10_000, 50_000, 100_000, 150_000, 153_000, 400_000].map(n => speedOf(grown(n)))
     expect(speeds[0]).toBe(0)
     expect(speeds).toEqual([...speeds].sort((a, b) => a - b))
+    // On the scale of 200k, 90% (the red of the frame) is 180k: 153k of conversation and the 27k of an empty session.
+    expect(speeds[3]).toBeLessThan(1)
     expect(speeds[4]).toBe(1)
-    // Past a sprint there is no faster.
+    // Past the sweat there is no faster.
     expect(speeds[5]).toBe(1)
   })
 
-  test('in a window smaller than 200k the sprint comes when the window is nearly full', () => {
+  test('it is at its fastest exactly when it sweats, in any window', () => {
+    for (const window of [30_000, 50_000, 100_000, 200_000, 1_000_000]) {
+      for (let tokens = BASELINE; tokens <= Math.min(window, 600_000); tokens += 1_000) {
+        const f = grown(tokens - BASELINE, {}, window)
+        expect(speedOf(f) === 1).toBe(isSweating(f))
+      }
+    }
+  })
+
+  test('in a window smaller than 200k the sweat comes when the window is nearly full', () => {
     const small = (n: number) => grown(n, {}, 100_000)
-    expect(fullTokensOf(small(0))).toBe(73_000)
-    expect(speedOf(small(73_000))).toBe(1)
+    // 90% of 100k, less the 27k of an empty session.
+    expect(isSweating(small(62_000))).toBe(false)
+    expect(isSweating(small(63_000))).toBe(true)
+    expect(speedOf(small(63_000))).toBe(1)
     expect(speedOf(small(40_000))).toBeGreaterThan(0.3)
-    // And never so small that the cat is at full speed the moment it wakes.
-    expect(fullTokensOf(grown(0, {}, 30_000))).toBeGreaterThan(WAKE_TOKENS)
+    // And never so small that it sweats the moment the session starts, while the window leaves it room to run up.
+    expect(speedOf(grown(0, {}, 50_000))).toBe(0)
+    expect(isSweating(grown(0, {}, 50_000))).toBe(false)
   })
 
   test('frames come quicker as the speed rises, from a stroll to a sprint', () => {
@@ -82,28 +84,41 @@ describe('pace', () => {
     expect(['walk', 'trot', 'run', 'sprint']).toEqual([0.1, 0.35, 0.65, 0.95].map(stageOf))
   })
 
-  test('the view: asleep when empty, running when grown, sweating near full, curled up for good when idle', () => {
+  test('the view: asleep before the first word, running by the size, sweating at the top, curled up for good when the cache is gone', () => {
+    // No request yet: nothing is cached. Asleep, breathing.
     const asleep = catView(grown(5_000), initialCat)
     expect(asleep.look.pose).toBe('sleep')
     expect(asleep.isResting).toBe(false)
     expect(asleep.phrase).toContain('眠って')
+    // Even a big conversation: it was picked up, not talked to.
+    expect(catView(grown(120_000), initialCat).look.pose).toBe('sleep')
 
-    const running = catView(grown(120_000), initialCat)
+    // A small conversation does not sleep; it strolls, at the slowest.
+    const small = catView(grown(5_000), { ...initialCat, idleMs: 0 })
+    expect(small.look).toEqual({ pose: 'run', frame: 0, isSweating: false, step: 0, isWalking: true })
+    expect(small.periodMs).toBe(SLOW_PERIOD_MS)
+
+    const running = catView(grown(120_000), { ...initialCat, idleMs: 0 })
     expect(running.look).toEqual({ pose: 'run', frame: 0, isSweating: false, step: 0, isWalking: false })
     expect(running.periodMs).toBeLessThan(SLOW_PERIOD_MS)
-    expect(catView(grown(120_000), { ...initialCat, steps: 5 }).look.frame).toBe(1)
+    expect(catView(grown(120_000), { ...initialCat, idleMs: 0, steps: 5 }).look.frame).toBe(1)
 
-    // Near full is 90% of the window, whatever the speed: a 200k window gets there with a conversation of 160k.
-    const full = catView(grown(160_000, {}, 200_000), initialCat)
+    // The top of the speed is 90% of the window: a 200k window gets there with a conversation of 153k.
+    const full = catView(grown(160_000, {}, 200_000), { ...initialCat, idleMs: 0 })
     expect(full.look.isSweating).toBe(true)
+    expect(full.periodMs).toBe(FAST_PERIOD_MS)
     expect(full.phrase).toContain('汗')
-    expect(catView(grown(120_000), initialCat).look.isSweating).toBe(false)
+    expect(catView(grown(120_000), { ...initialCat, idleMs: 0 }).look.isSweating).toBe(false)
 
-    // Five quiet minutes: it sleeps and nothing need run until the person is back.
-    const idle = catView(grown(120_000), { ...initialCat, idleMs: IDLE_SLEEP_MS })
-    expect(idle.look.pose).toBe('sleep')
-    expect(idle.isResting).toBe(true)
-    expect(catView(grown(120_000), { ...initialCat, idleMs: IDLE_SLEEP_MS - 1 }).isResting).toBe(false)
+    // The cache's life over: it sleeps and nothing need run until the person is back.
+    const gone = catView(grown(120_000), { ...initialCat, idleMs: DEFAULT_CACHE_TTL_MS })
+    expect(gone.look.pose).toBe('sleep')
+    expect(gone.isResting).toBe(true)
+    expect(gone.phrase).toContain('キャッシュが切れ')
+    expect(catView(grown(120_000), { ...initialCat, idleMs: DEFAULT_CACHE_TTL_MS - 1 }).isResting).toBe(false)
+    // A cache that lives an hour (a subscription's) is not gone at five minutes.
+    expect(catView(grown(120_000), { ...initialCat, ttlMs: 60 * 60_000, idleMs: DEFAULT_CACHE_TTL_MS }).isResting).toBe(false)
+    expect(catView(grown(120_000), { ...initialCat, ttlMs: 60 * 60_000, idleMs: 60 * 60_000 }).isResting).toBe(true)
   })
 
   test('a jump, and the demonstrations of the pane, take over from what the facts say', () => {
@@ -111,15 +126,17 @@ describe('pace', () => {
     const jump = catView(f, { ...initialCat, jumpLeft: JUMP_STEPS })
     expect(jump.look.pose).toBe('jump')
     expect(jump.isResting).toBe(false)
-    // Even a cat asleep for the night jumps.
-    expect(catView(f, { ...initialCat, idleMs: IDLE_SLEEP_MS, jumpLeft: 3 }).look.pose).toBe('jump')
+    // Even a Clawd asleep for the night jumps.
+    expect(catView(f, { ...initialCat, idleMs: DEFAULT_CACHE_TTL_MS, jumpLeft: 3 }).look.pose).toBe('jump')
 
-    expect(catView(f, { ...initialCat, demo: 'sprint' }).periodMs).toBe(FAST_PERIOD_MS)
+    expect(catView(f, { ...initialCat, demo: 'sprint' }).periodMs).toBeLessThan(periodOf(0.8))
+    expect(catView(f, { ...initialCat, demo: 'sprint' }).look.isSweating).toBe(false)
     expect(catView(f, { ...initialCat, demo: 'walk' }).periodMs).toBeGreaterThan(200)
     expect(catView(f, { ...initialCat, demo: 'sweat' }).look.isSweating).toBe(true)
+    expect(catView(f, { ...initialCat, demo: 'sweat' }).periodMs).toBe(FAST_PERIOD_MS)
     expect(catView(f, { ...initialCat, demo: 'sleep' }).look.pose).toBe('sleep')
-    // A demonstration is not the idle cat: it keeps running while it lasts.
-    expect(catView(f, { ...initialCat, demo: 'run', idleMs: IDLE_SLEEP_MS }).isResting).toBe(false)
+    // A demonstration is not the idle Clawd: it keeps running while it lasts.
+    expect(catView(f, { ...initialCat, demo: 'run', idleMs: DEFAULT_CACHE_TTL_MS }).isResting).toBe(false)
   })
 })
 
@@ -159,11 +176,14 @@ describe('one scale for the cat, the colours and the suggestions', () => {
     expect(moodOf(full, null, false)).toBe('full')
     expect(isSweating(heavy)).toBe(false)
     expect(isSweating(full)).toBe(true)
+    // ...and so does the top of the speed.
+    expect(speedOf(heavy)).toBeLessThan(1)
+    expect(speedOf(full)).toBe(1)
   })
 
   test('a heavy spell is judged on the same scale: it ends when the conversation falls below it', () => {
-    expect(pruneSeen(['compact-70', 'compact-90', 'worker'], at(145_000, 1_000_000))).toEqual(['compact-70', 'worker'])
-    expect(pruneSeen(['compact-70', 'compact-90', 'worker'], at(100_000, 1_000_000))).toEqual(['worker'])
+    expect(pruneSeen(['compact-70', 'compact-90', 'effort'], at(145_000, 1_000_000))).toEqual(['compact-70', 'effort'])
+    expect(pruneSeen(['compact-70', 'compact-90', 'effort'], at(100_000, 1_000_000))).toEqual(['effort'])
   })
 })
 
@@ -360,10 +380,14 @@ const measureTokens = (tokens: number, window = 1_000_000) =>
 
 const cellsOf = (look: Look): string => catCells(look)
 
+/** The person says a word: the prompt cache is warm, and Clawd is awake. */
+const speak = ($: Engine): Promise<unknown> => $.prompt.submit({ text: 'hello' } as never)
+
 test('the band hands the cat its place and repaints it frame by frame, there and nowhere else', async ($, on) => {
   const calls = engine(on)
   const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
 
   // Nothing is painted until a frame is due, and then at the band's own id and the cat's key.
   expect(calls.blits.length).toBe(0)
@@ -383,6 +407,7 @@ test('the band hands the cat its place and repaints it frame by frame, there and
 test('the larger the conversation, the quicker the frames', async ($, on) => {
   const calls = engine(on)
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await speak($)
 
   await $.session.measure(measureTokens(BASELINE + 40_000))
   await calls.clock.advance(3000)
@@ -397,7 +422,7 @@ test('the larger the conversation, the quicker the frames', async ($, on) => {
   expect(sprint).toBeGreaterThan(stroll * 2)
 })
 
-test('an empty conversation sleeps: the picture is Clawd lying down, not the running one', async ($, on) => {
+test('before the first word Clawd sleeps: the picture is Clawd lying down, not the running one', async ($, on) => {
   const calls = engine(on, { conversationTokens: 1_000 })
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.measure(measureTokens(BASELINE + 3_000))
@@ -408,14 +433,33 @@ test('an empty conversation sleeps: the picture is Clawd lying down, not the run
   for (const blit of calls.blits) expect(asleep).toContain(blit.cells)
 })
 
-test('five quiet minutes and the cat curls up for good; the next word wakes it', async ($, on) => {
+test('a small conversation does not sleep: it strolls, at the slowest, once there is a cache to keep warm', async ($, on) => {
+  const calls = engine(on, { conversationTokens: 1_000 })
+  await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await $.session.measure(measureTokens(BASELINE + 3_000))
+  await speak($)
+  calls.blits.length = 0
+  await calls.clock.advance(3000)
+
+  const strolling = LOOKS.walk.map(catCells)
+  expect(calls.blits.length).toBeGreaterThan(8)
+  for (const blit of calls.blits) expect(strolling).toContain(blit.cells)
+})
+
+test('when the prompt cache is gone Clawd curls up for good; the next word wakes it', async ($, on) => {
   const calls = engine(on)
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
 
-  await calls.clock.advance(IDLE_SLEEP_MS + 5_000)
-  // The resting picture is the second of the row: breathing in, with both z's.
+  // A minute short of the cache's five: Clawd is running.
   const sleeping = cellsOf({ pose: 'sleep', frame: 0, isSweating: false, step: 1 })
+  await calls.clock.advance(DEFAULT_CACHE_TTL_MS - 60_000)
+  expect(calls.blits.length).toBeGreaterThan(100)
+  expect(calls.blits.some(b => b.cells === sleeping)).toBe(false)
+
+  await calls.clock.advance(65_000)
+  // The resting picture is the second of the row: breathing in, with both z's.
   expect(calls.blits.at(-1)?.cells).toBe(sleeping)
 
   // Nothing runs on any more: not a frame in an hour.
@@ -423,7 +467,7 @@ test('five quiet minutes and the cat curls up for good; the next word wakes it',
   await calls.clock.advance(60 * 60_000)
   expect(calls.blits.length).toBe(painted)
 
-  // A redraw of the band (the figures changed) is not the person's word: the cat stays asleep.
+  // A redraw of the band (the figures changed) is not the person's word: Clawd stays asleep.
   await $.session.measure(measureTokens(BASELINE + 121_000))
   await calls.clock.advance(5_000)
   expect(calls.blits.length).toBe(painted)
@@ -434,13 +478,73 @@ test('five quiet minutes and the cat curls up for good; the next word wakes it',
   expect(calls.blits.at(-1)?.cells).not.toBe(sleeping)
 })
 
+test('a request answered starts the cache’s life over, so a long turn does not put Clawd to sleep', async ($, on) => {
+  const calls = engine(on)
+  await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
+
+  const sleeping = cellsOf({ pose: 'sleep', frame: 0, isSweating: false, step: 1 })
+  await calls.clock.advance(4 * 60_000)
+  await runStep($)
+  // Four more minutes, eight in all since the word: the request four minutes ago kept the cache.
+  await calls.clock.advance(4 * 60_000)
+  expect(calls.blits.some(b => b.cells === sleeping)).toBe(false)
+
+  await calls.clock.advance(2 * 60_000)
+  expect(calls.blits.at(-1)?.cells).toBe(sleeping)
+})
+
+test('on a subscription the cache lives an hour, so Clawd sleeps then and not at five minutes', async ($, on) => {
+  const calls = engine(on)
+  await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  // A small conversation, at the slowest stroll, so that an hour of frames is not too many to run.
+  await $.session.measure({ ...measureTokens(BASELINE + 3_000), rateLimits: [{ kind: 'five_hour', percentUsed: 10 }] as never })
+  await speak($)
+
+  const sleeping = cellsOf({ pose: 'sleep', frame: 0, isSweating: false, step: 1 })
+  await calls.clock.advance(DEFAULT_CACHE_TTL_MS + 60_000)
+  expect(calls.blits.some(b => b.cells === sleeping)).toBe(false)
+
+  // The timer runs a frame at a time: the clock is advanced in steps it can follow.
+  for (let minutes = 6; minutes < 60; minutes += 6) await calls.clock.advance(6 * 60_000)
+  await calls.clock.advance(60_000)
+  expect(calls.blits.at(-1)?.cells).toBe(sleeping)
+})
+
+test('a mod loaded again in a running session finds Clawd awake while the last turn is within the cache’s life, and asleep after', async ($, on) => {
+  const calls = engine(on)
+  await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await $.session.measure(measureTokens(BASELINE + 120_000))
+  const usage = { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 30_000, model: 'm' }
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', usage } as never)
+  await calls.clock.advance(2 * 60_000)
+
+  // A start over: the module's own memory of the cache's age is gone, the facts are not. The band is drawn again as it is on a load.
+  await $.session.start({ cwd: '/work' } as never)
+  await $.session.measure(measureTokens(BASELINE + 120_500))
+  calls.blits.length = 0
+  await calls.clock.advance(1_000)
+  const sleeping = LOOKS.sleep.map(catCells)
+  expect(calls.blits.length).toBeGreaterThan(2)
+  expect(calls.blits.every(b => !sleeping.includes(b.cells))).toBe(true)
+
+  // Three more minutes: the turn ended five minutes ago, whatever the start over forgot.
+  await calls.clock.advance(3 * 60_000)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.session.measure(measureTokens(BASELINE + 121_000))
+  await calls.clock.advance(1_000)
+  expect(calls.blits.at(-1)?.cells).toBe(cellsOf({ pose: 'sleep', frame: 0, isSweating: false, step: 1 }))
+})
+
 const wakeBy = (name: string, act: ($: Engine) => Promise<unknown>): void => {
-  test(`a cat asleep for good is woken by ${name}`, async ($, on) => {
+  test(`a Clawd asleep for good is woken by ${name}`, async ($, on) => {
     const calls = engine(on)
     on('tool.call', () => ({ result: { type: 'text' }, text: 'x', isReadOnly: true, ref: 1 }) as never)
     await $.ui.mount({ ...bandProps(), surface: 'terminal' })
     await $.session.measure(measureTokens(BASELINE + 120_000))
-    await calls.clock.advance(IDLE_SLEEP_MS + 5_000)
+    await speak($)
+    await calls.clock.advance(DEFAULT_CACHE_TTL_MS + 5_000)
     const painted = calls.blits.length
 
     await act($)
@@ -460,6 +564,7 @@ test('a repaint the engine refuses stops the timer, and the next draw of the ban
   const calls = engine(on)
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
 
   calls.isBlitRefused = true
   await calls.clock.advance(2000)
@@ -560,13 +665,13 @@ test('the pane can show every pose, whatever the conversation is like, and then 
   await calls.clock.advance(200)
   expect(calls.blits.some(b => b.cells === cellsOf({ pose: 'jump', frame: 0, isSweating: false }))).toBe(true)
 
-  // After the demonstration the empty conversation sleeps again.
+  // After the demonstration Clawd goes back to what the facts say: an empty conversation, a stroll, with a cache warm from the pane.
   await calls.clock.advance(30_000)
   calls.blits.length = 0
   await calls.clock.advance(2_000)
-  const asleep = LOOKS.sleep.map(catCells)
+  const strolling = LOOKS.walk.map(catCells)
   expect(calls.blits.length).toBeGreaterThan(0)
-  expect(calls.blits.every(b => asleep.includes(b.cells))).toBe(true)
+  expect(calls.blits.every(b => strolling.includes(b.cells))).toBe(true)
 })
 
 test('the words beside the cat follow what it is doing, though the band is drawn again only when that changes', async ($, on) => {
@@ -585,14 +690,14 @@ test('the words beside the cat follow what it is doing, though the band is drawn
   await calls.clock.advance(300)
   expect(await band.find({ type: 'Text', text: /汗だく/ })).toBeDefined()
 
-  // The demonstration over, the words go back to what the facts say.
+  // The demonstration over, the words go back to what the facts say: nothing grown yet, a stroll.
   await calls.clock.advance(30_000)
-  expect(await band.find({ type: 'Text', text: /ぐっすり眠って/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /のんびり歩いて/ })).toBeDefined()
 
-  // And a quiet cat is said to be resting.
+  // And once the cache is gone, Clawd is said to be asleep for that.
   await $.session.measure(measureTokens(BASELINE + 120_000))
-  await calls.clock.advance(IDLE_SLEEP_MS + 5_000)
-  expect(await band.find({ type: 'Text', text: /お休み中/ })).toBeDefined()
+  await calls.clock.advance(DEFAULT_CACHE_TTL_MS + 5_000)
+  expect(await band.find({ type: 'Text', text: /キャッシュが切れた/ })).toBeDefined()
 })
 
 test('with "Reduce motion" on the cat stands still: a picture for each state, no timer, no jump, no demonstration', async ($, on) => {
@@ -600,6 +705,7 @@ test('with "Reduce motion" on the cat stands still: a picture for each state, no
   const band = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.start({ cwd: '/work' } as never)
   await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
   await calls.clock.advance(5_000)
   expect(calls.blits.length).toBe(0)
 
@@ -627,6 +733,7 @@ test('turning "Reduce motion" on stops a running cat, and off sets it going agai
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.start({ cwd: '/work' } as never)
   await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
   await calls.clock.advance(1_000)
   expect(calls.blits.length).toBeGreaterThan(0)
 
@@ -645,6 +752,7 @@ test('a build with no "Reduce motion" row leaves the cat running', async ($, on)
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.start({ cwd: '/work' } as never)
   await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
   await calls.clock.advance(1_000)
   expect(calls.blits.length).toBeGreaterThan(2)
 })
@@ -655,30 +763,35 @@ test('the pane offers the demonstration only once the band is showing a cat', as
   expect(await pane.find({ type: 'Button', key: 'cat-sprint' })).toBeUndefined()
 })
 
-test('the first response measures what an empty session holds, so the cat is counted from there', async ($, on) => {
+test('the first response measures what an empty session holds, so Clawd’s speed is counted from there', async ($, on) => {
   const calls = engine(on, { conversationTokens: 3_000 })
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+  await speak($)
   const usage = { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 30_000, model: 'm' }
 
-  // 30k in the window and 3k of it conversation: an empty session holds 27k, so 47k is a grown 20k: awake.
+  // 30k in the window and 3k of it conversation: an empty session holds 27k, so 46k is a conversation grown 19k, short of the 20k
+  // where the run begins to speed up: a stroll.
   await $.session.measure(measureTokens(30_000))
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', usage } as never)
   expect(calls.usageAsked).toBeGreaterThan(0)
   calls.blits.length = 0
   await $.session.measure(measureTokens(46_000))
   await calls.clock.advance(1000)
-  expect(calls.blits.every(b => LOOKS.sleep.map(catCells).includes(b.cells))).toBe(true)
+  expect(calls.blits.length).toBeGreaterThan(0)
+  expect(calls.blits.every(b => LOOKS.walk.map(catCells).includes(b.cells))).toBe(true)
 
+  // Grown well past it, Clawd gallops.
   calls.blits.length = 0
-  await $.session.measure(measureTokens(47_500))
+  await $.session.measure(measureTokens(130_000))
   await calls.clock.advance(1000)
-  expect(calls.blits.some(b => [...LOOKS.run, ...LOOKS.walk].some(look => b.cells === catCells(look)))).toBe(true)
+  expect(calls.blits.some(b => LOOKS.run.some(look => b.cells === catCells(look)))).toBe(true)
 })
 
 test('a session that ends stops the timer', async ($, on) => {
   const calls = engine(on)
   await $.ui.mount({ ...bandProps(), surface: 'terminal' })
   await $.session.measure(measureTokens(BASELINE + 120_000))
+  await speak($)
   await calls.clock.advance(500)
   expect(calls.blits.length).toBeGreaterThan(0)
 

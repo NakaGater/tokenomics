@@ -60,7 +60,6 @@ import { cacheShare, contextBucket, idleBucket, wasCold } from './lib/core/usage
 import { isBoundaryCommand } from './lib/signals'
 import { report, savedAll, settingsReport } from './lib/status'
 import { commandArg, commandOf, startsAt, windowView } from './lib/window'
-import { WORKER, WORKER_DESCRIPTION, WORKER_PROMPT, WORKER_TOOLS } from './lib/worker'
 import { Band } from './ui/band'
 import { OfferView } from './ui/offer'
 import { Pane, SettingsPane } from './ui/pane'
@@ -115,8 +114,11 @@ let catDueMs = 0
 let catFacts: Facts = initialFacts
 /** Frames shown since Clawd last changed what it was doing. */
 let catSteps = 0
-/** Milliseconds the person has been quiet; at five minutes Clawd curls up and the timer stops. */
-let catIdleMs = 0
+/**
+ * Milliseconds since the last request (or word, or tool call) kept the prompt cache warm: when the cache's life is over Clawd
+ * curls up and the timer stops. null: nothing has happened in this session yet, so there is no cache.
+ */
+let catIdleMs: number | null = null
 /** Frames of a jump still to play. */
 let catJumpLeft = 0
 let catDemo: Demo | null = null
@@ -139,7 +141,14 @@ let catShownPng = ''
 let catAsImage = false
 let imageProbe: { cancel: () => void } | null = null
 
-const catState = (): CatState => ({ steps: catSteps, idleMs: catIdleMs, jumpLeft: catJumpLeft, demo: catDemo })
+const catState = (): CatState => ({
+  steps: catSteps,
+  idleMs: catIdleMs,
+  // The cache lives as long as the savings layer takes it to (5 minutes on an API key, an hour on a subscription, or the setting).
+  ttlMs: cacheTtlMs(sv.options, catFacts.rateLimits.length > 0),
+  jumpLeft: catJumpLeft,
+  demo: catDemo,
+})
 
 /** What the mod changed in the saved model setting, kept past the session so it can be undone. */
 type Pending = { previous: string; switchedTo: string }
@@ -204,7 +213,7 @@ const stepCat = async ($: Dollar): Promise<void> => {
       catDemo = null
       catSteps = 0
     }
-  } else {
+  } else if (catIdleMs !== null) {
     catIdleMs += view.periodMs
   }
   // Clawd curled up for the night needs no timer: the person's next word wakes it.
@@ -303,7 +312,7 @@ const resetCat = (): void => {
   stopCat()
   catFacts = initialFacts
   catSteps = 0
-  catIdleMs = 0
+  catIdleMs = null
   catJumpLeft = 0
   catDemo = null
   catDemoLeftMs = 0
@@ -470,6 +479,8 @@ const refreshSettings = async ($: Dollar): Promise<void> => {
  */
 const showPane = async ($: Dollar, id: typeof PANE | typeof SETTINGS_PANE) => {
   await $.ui.close({ id: id === PANE ? SETTINGS_PANE : PANE })
+  // The auto-compact slider starts on the recommended size each time the settings pane is opened, not where it was left.
+  if (id === SETTINGS_PANE) await update($, windowPick, () => null)
   const opened = await $.ui.open({ id, title: id === PANE ? '分析' : '設定' })
   await refreshUsage($, true)
   await refreshSettings($)
@@ -731,35 +742,6 @@ const resetWindow = async ($: Dollar): Promise<void> => {
   if (view !== null) await setWindow($, view.standard, 'pane')
 }
 
-/** Registers the light helper; there is no unregistering, so `agent.offer` decides whether the model hears of it. */
-const registerWorker = async ($: Dollar): Promise<boolean> => {
-  try {
-    await $.agent.register({
-      name: WORKER,
-      description: WORKER_DESCRIPTION,
-      prompt: WORKER_PROMPT,
-      tools: WORKER_TOOLS,
-      model: 'haiku',
-      effort: 'low',
-      // Not the parent's: in an auto or bypass session the helper would otherwise run any command unasked.
-      permissionMode: 'default',
-      omitClaudeMd: true,
-    })
-    return true
-  } catch {
-    return false
-  }
-}
-
-const turnOnWorker = async ($: Dollar): Promise<void> => {
-  if (!(await registerWorker($))) {
-    $.ui.toast(say('heavy', '軽量エージェントを用意できませんでした。'))
-    return
-  }
-  await update($, modes, m => ({ ...m, isWorkerOn: true }))
-  $.ui.toast(say('good', '軽量エージェントを使えるようにしました。調べものを軽いモデルに任せます。'))
-}
-
 const setEffort = async ($: Dollar, cap: EffortSetting | null): Promise<void> => {
   await update($, modes, m => ({ ...m, effort: cap }))
   $.ui.toast(
@@ -888,9 +870,6 @@ const carryOut = async ($: Dollar, offer: Offer): Promise<void> => {
     case 'boundary':
       await startFresh($)
       return
-    case 'worker':
-      await turnOnWorker($)
-      return
     case 'model':
       if (offer.target !== undefined) await switchModel($, offer.target)
       return
@@ -907,7 +886,6 @@ const carryOut = async ($: Dollar, offer: Offer): Promise<void> => {
 const stopSaving = async ($: Dollar, key: SavingKey): Promise<void> => {
   if (key === 'effort') return setEffort($, null)
   if (key === 'model') return restoreModel($)
-  if (key === 'worker') await update($, modes, m => ({ ...m, isWorkerOn: false }))
   if (key === 'handoff') await update($, modes, m => ({ ...m, isHandoffOn: false }))
   $.ui.toast(say('good', 'やめました。'))
 }
@@ -1063,7 +1041,7 @@ const modeFor = (id: MeasureId): Mode => {
 }
 
 /** The version the ledger export names. */
-const MOD_VERSION = '0.7.0'
+const MOD_VERSION = '0.7.2'
 
 const svInit = async ($: Dollar): Promise<void> => {
   try {
@@ -1831,8 +1809,6 @@ export const register: Register = (on, options) => {
     // A model this mod moved in an earlier session whose end was cut short: put it back.
     const back = await restorePending($)
     if (back !== null) $.ui.toast(say('good', `前回切り替えたモデルを ${back} に戻しました。`))
-    // A reload forgets the registration but not the switch: put the helper back if it is on.
-    if ((await read($, modes)).isWorkerOn) await registerWorker($)
     await refreshUsage($, true)
     await refreshSettings($)
     await svStarted($, e.isInteractive)
@@ -2117,6 +2093,8 @@ export const register: Register = (on, options) => {
       // The band and the pane follow the turn as it goes, not only when it ends (the engine measures once a turn).
       const requests = requestsThisTurn
       await change($, f => applyRequest(f, requests, e.model))
+      // The request wrote or read the prompt cache, which starts its life over.
+      nudgeCat($)
       if (sparedIn === sv.epoch) await svFlow($, spared, sparedFresh, e.model)
     }
     await svStepped($, e.agentId, step)
@@ -2143,13 +2121,6 @@ export const register: Register = (on, options) => {
 
     return modeFor('B1') === 'auto' ? next(e) : { isOffered: false }
   }).catch(($, e, next) => next(e))
-
-  // The light helper is registered when the person accepts it, and the model hears of it only while it stays on.
-  on('agent.offer', { agent: 'tokenomics:light-worker' }, async ($, e, next) => {
-    if (!(await read($, modes)).isWorkerOn) return { isOffered: false }
-
-    return next(e)
-  }).catch(() => ({ isOffered: false }))
 
   // B2: a subagent of a listed kind thinks less.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
@@ -2290,6 +2261,10 @@ export const register: Register = (on, options) => {
 
     const f = await read($, facts)
     catFacts = f
+    // A reload of the mod in a running session starts Clawd over, but the cache did not: its age is told by the turn that last ended.
+    if (catIdleMs === null && (f.isLastRunning === true || f.endedAt !== null)) {
+      catIdleMs = f.isLastRunning === true || f.endedAt === null ? 0 : Math.max(0, (await $.clock.now()) - f.endedAt)
+    }
     const open = await read($, openOffer)
     const card = open?.view === 'card' ? ((await offerFor($, open.id)) ?? null) : null
 

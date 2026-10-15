@@ -9,7 +9,6 @@ import { MODEL_SWITCH, SURFACES, answer, bandProps, engine, measure, offerPanePr
 const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 const DIALOG = 'tokenomics-offer'
 const TOOL = { plugin: 'tokenomics', tier: 'user' } as const
-const WORKER_OFFER = { agent: 'tokenomics:light-worker', description: '', source: 'plugin', provider: TOOL } as const
 
 const transcript: SessionMessage[] = [
   { role: 'user', text: 'Add a dark mode toggle', toolUses: [] },
@@ -326,53 +325,16 @@ test('a big turn breaks the run of small ones', async ($, on) => {
   expect(dialogs(calls)).toBe(1)
 })
 
-test('after a large read the light helper is proposed; accepted, it is registered cheap and read-only, and heard of only while on', async ($, on) => {
+test('a large read proposes nothing and registers no helper: the digest and the scout are what deal with it', async ($, on) => {
   const calls = engine(on)
   bigRead(on)
   await $.session.start(START)
-  const band = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
-
-  expect(calls.agents).toEqual([])
-  expect((await $.agent.offer(WORKER_OFFER as never)).isOffered).toBe(false)
 
   await $.tool.call({ tool: 'Read', tool_use_id: 'tu_1', file_path: '/repo/src/huge-generated-file.ts' } as never)
   await done($, 't1')
-  expect(dialogs(calls)).toBe(1)
-  const dialog = await $.ui.mount({ ...offerPaneProps, surface: 'terminal' })
-  expect(await dialog.find({ type: 'Text', text: /大きな読み込みがありました（約15k tok）/ })).toBeDefined()
-  await dialog.unmount()
 
-  await answer($ as never, 'accept')
-  const spec = calls.agents[0]
-  expect(spec?.name).toBe('light-worker')
-  expect(spec?.model).toBe('haiku')
-  expect(spec?.effort).toBe('low')
-  expect(spec?.omitClaudeMd).toBe(true)
-  // Not inherited: in an auto or bypass session a helper with Bash would otherwise run any command unasked.
-  expect(spec?.permissionMode).toBe('default')
-  expect(spec?.tools).toContain('Read')
-  expect(spec?.tools).not.toContain('Edit')
-  expect(spec?.tools).not.toContain('Write')
-  expect((await $.agent.offer(WORKER_OFFER as never)).isOffered).toBe(true)
-  expect(await band.find({ type: 'Text', text: '節約中: 軽量エージェント' })).toBeDefined()
-
-  const pane = await $.ui.mount({ ...settingsPaneProps, surface: 'terminal' })
-  await pane.press({ key: 'stop-worker' })
-  expect((await $.agent.offer(WORKER_OFFER as never)).isOffered).toBe(false)
-  expect(await band.find({ type: 'Text', text: /節約中/ })).toBeUndefined()
-})
-
-test('if the helper cannot be registered it stays off, and says so', async ($, on) => {
-  const calls = engine(on, { isRegisterBroken: true })
-  bigRead(on)
-  await $.session.start(START)
-
-  await $.tool.call({ tool: 'Read', tool_use_id: 'tu_1', file_path: '/a.ts' } as never)
-  await done($, 't1')
-  await answer($ as never, 'accept')
-
-  expect(calls.toasts.at(-1)).toContain('用意できませんでした')
-  expect((await $.agent.offer(WORKER_OFFER as never)).isOffered).toBe(false)
+  expect(dialogs(calls)).toBe(0)
+  expect(calls.agents).toEqual([])
 })
 
 test('a lighter model is proposed while the conversation is small and a limit is running out; accepted, it is switched', async ($, on) => {

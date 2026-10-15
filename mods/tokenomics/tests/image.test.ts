@@ -131,6 +131,7 @@ describe('the cat as a picture in the band', () => {
     await $.session.start(START)
     const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
     await $.session.measure(measureTokens(BASELINE + 150_000))
+    await $.prompt.submit({ text: 'hello' } as never)
     calls.blits.length = 0
     await calls.clock.advance(1500)
 
@@ -151,6 +152,7 @@ describe('the cat as a picture in the band', () => {
     const calls = engine(on, { env: KITTY })
     await $.session.start(START)
     const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
+    await $.prompt.submit({ text: 'hello' } as never)
 
     await $.session.measure(measureTokens(BASELINE + 40_000))
     calls.blits.length = 0
@@ -175,6 +177,7 @@ describe('the cat as a picture in the band', () => {
     await $.session.start(START)
     const ui = await $.ui.mount({ ...bandProps(), surface: 'terminal' })
     await $.session.measure(measureTokens(BASELINE + 120_000))
+    await $.prompt.submit({ text: 'hello' } as never)
     await calls.clock.advance(1500)
 
     expect(await ui.find({ type: 'Image' })).toBeUndefined()

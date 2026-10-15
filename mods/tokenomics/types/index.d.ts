@@ -114,8 +114,6 @@ export type EffortSetting = 'low' | 'medium'
 export type Modes = {
   /** Cap on how hard turns think; null leaves the session's own setting. */
   effort: EffortSetting | null
-  /** The light read-only helper is offered to the model. */
-  isWorkerOn: boolean
   /** Every compaction, the engine's too, is preceded by a note of what it would lose, saved to a file. */
   isHandoffOn: boolean
   /** The model the person had before the mod switched it, so it can be put back. */
@@ -164,7 +162,7 @@ export type Savings = {
 export type ModelRow = { value: string; options: string[] }
 
 /** The suggestions the mod makes: each a way to spend fewer tokens that the person may accept. */
-export type OfferKind = 'compact' | 'autocompact' | 'window' | 'boundary' | 'worker' | 'model' | 'effort' | 'suggest'
+export type OfferKind = 'compact' | 'autocompact' | 'window' | 'boundary' | 'model' | 'effort' | 'suggest'
 
 /** The suggestion on screen now, and where: a dialog pane, or a card above the band where no pane fits. */
 export type OpenOffer = { id: string; kind: OfferKind; view: 'dialog' | 'card' }

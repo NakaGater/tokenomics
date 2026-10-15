@@ -4,6 +4,7 @@
 # BENCH_OPTIONS  the mod's settings for the "on" arm, as JSON (default {})
 # BENCH_BUDGET_USD  a ceiling for one run (default 1)
 # BENCH_CLAUDE  the command to run instead of `claude` (a stub, to try this script without spending anything)
+# BENCH_RESULTS  the folder the results go under (default bench/results)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,7 +19,7 @@ command -v jq > /dev/null || { echo "jq is needed" >&2; exit 1; }
 [ -f "$TASK/task.md" ] && [ -f "$TASK/check.sh" ] || { echo "$TASK needs task.md and check.sh" >&2; exit 1; }
 
 NAME="$(basename "$TASK")"
-OUT="$ROOT/bench/results/$NAME-$(date +%Y%m%d-%H%M%S)"
+OUT="${BENCH_RESULTS:-$ROOT/bench/results}/$NAME-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 echo "arm,run,pass,cost_usd,turns,duration_ms" > "$OUT/results.csv"
 TOOLS="Bash Read Edit Write Glob Grep"

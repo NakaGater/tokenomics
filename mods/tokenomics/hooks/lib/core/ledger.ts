@@ -7,8 +7,9 @@ import type { Arm } from './policy'
 
 /**
  * The ledger: what each measure did and what came of it, kept as counts and sums by day, plus the last few events.
- * It holds no content of the person's: no prompt, no file name, no path, no command. Every word in it is one of a
- * short list the code chooses (`sanitize` refuses anything else), and every other value is a number.
+ * It holds no content of the person's: no prompt, no file name, no path, no command. Every word in it is a short token of
+ * letters, digits and `_ . : -` (`sanitize` refuses anything else, so a path or a sentence cannot get in), and every other
+ * value is a number.
  */
 export type Kind = 'fired' | 'would' | 'shown' | 'accepted' | 'dismissed' | 'outcome' | 'signal' | 'error' | 'feedback'
 

@@ -142,7 +142,7 @@ describe('a turn in progress, on screen', () => {
     await $.session.start(START)
     await $.session.measure(measure.context(10))
     const pane = await $.ui.mount({ ...paneProps, surface: 'terminal' })
-    expect(await pane.find({ type: 'Text', text: /まだありません。ターンが終わると出ます/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /まだありません。リクエストが返ると出ます/ })).toBeDefined()
 
     await runStep($ as never)
     await runStep($ as never)

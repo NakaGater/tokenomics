@@ -3,7 +3,7 @@ import { FRAME_ROWS, MARK_COLORS, POINTS_H, POINTS_W, POINT_COLORS, type Frame, 
 import { type Cell, BLANK, QUADRANTS, TERMINAL_DEFAULT, packCells } from './raster'
 
 /**
- * The mascot's picture, Clawd (hooks/lib/clawd.ts): 16 cells wide and 4 tall, each cell two points across and two down.
+ * The mascot's picture, Clawd (hooks/lib/clawd.ts): 16 cells wide and 5 tall, each cell two points across and two down.
  * A point is half a cell wide and half a cell tall, so it stands twice as tall as it is wide; the art is drawn for that.
  */
 export const CAT_COLS = POINTS_W / 2
